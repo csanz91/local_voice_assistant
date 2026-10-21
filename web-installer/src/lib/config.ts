@@ -1,46 +1,36 @@
 export const CONFIG_SCHEMA = "sebastian.config.v1";
-
-// Operating modes are the top-level, mutually-exclusive choice. Each mode locks
-// the interdependent audio settings (duplex + beam) so the operator can't pick a
-// combination that breaks echo cancellation; everything else stays tunable.
 export type OperatingMode = "full_duplex" | "half_duplex";
-
 export const OPERATING_MODES: OperatingMode[] = ["full_duplex", "half_duplex"];
+
+export interface DeviceProfile {
+  name: string;
+  mode?: "agent" | "usb_mic";
+  fullDuplex?: boolean;
+  fixedBeam?: boolean;
+  beamAzimuthDeg?: number;
+  wifi?: boolean;
+  telemetry?: boolean;
+}
 
 export interface DeviceConfig {
   schema: typeof CONFIG_SCHEMA;
   mode: OperatingMode;
-  wifi: { ssid: string; password: string; hidden: boolean };
-  livekit: {
-    tokenServerUrl: string;
-    deviceIdentity: string;
-    room: string;
-    agentName: string;
-  };
-  telemetry: { syslogIp: string; syslogPort: number; otlpEndpoint: string; grafanaUrl: string };
-  audio: {
-    micChannel: "right" | "left";
-    fixedBeam: boolean;
-    fixedBeamAzimuthDeg: number;
-    fullDuplex: boolean;
-  };
+  wifi: { ssid: string; password?: string };
+  // Keep this NVS-compatible name: the value is the complete session endpoint.
+  livekit: { tokenServerUrl: string; allowInsecureHttp: boolean };
+  telemetry: { syslogIp: string; syslogPort: number };
+  audio: { fixedBeam: boolean; fixedBeamAzimuthDeg: number; fullDuplex: boolean };
   session: { silenceTimeoutMs: number; voiceLevel: number };
-  adoption?: { orgSecret: string; deviceSecret?: string };
+  device?: { secret?: string };
+  profiles?: DeviceProfile[];
+  activeProfile?: string;
 }
 
-// The audio settings each mode fixes. Selecting a mode merges these over the
-// current audio config; the mode's own form then only exposes what's left to tune.
 export const MODE_PRESETS: Record<OperatingMode, Partial<DeviceConfig["audio"]>> = {
-  // Full-duplex needs a fixed beam for the AEC to converge.
   full_duplex: { fullDuplex: true, fixedBeam: true },
-  // Half-duplex gates the mic while the agent speaks; an adaptive beam tracks the talker.
   half_duplex: { fullDuplex: false, fixedBeam: false },
 };
 
-const isMode = (v: unknown): v is OperatingMode =>
-  typeof v === "string" && (OPERATING_MODES as string[]).includes(v);
-
-// Switch modes: set the mode and merge its locked audio settings.
 export function applyMode(config: DeviceConfig, mode: OperatingMode): DeviceConfig {
   return { ...config, mode, audio: { ...config.audio, ...MODE_PRESETS[mode] } };
 }
@@ -48,120 +38,116 @@ export function applyMode(config: DeviceConfig, mode: OperatingMode): DeviceConf
 export const defaultConfig = (): DeviceConfig => ({
   schema: CONFIG_SCHEMA,
   mode: "full_duplex",
-  wifi: { ssid: "", password: "", hidden: false },
-  livekit: {
-    tokenServerUrl: "",
-    deviceIdentity: "esp32-respeaker",
-    room: "sebastian",
-    agentName: "sebastian",
-  },
-  telemetry: { syslogIp: "", syslogPort: 514, otlpEndpoint: "", grafanaUrl: "" },
-  audio: {
-    micChannel: "right",
-    fixedBeam: true,
-    fixedBeamAzimuthDeg: 0,
-    fullDuplex: true,
-  },
+  wifi: { ssid: "" },
+  livekit: { tokenServerUrl: "", allowInsecureHttp: false },
+  telemetry: { syslogIp: "", syslogPort: 514 },
+  audio: { fixedBeam: true, fixedBeamAzimuthDeg: 0, fullDuplex: true },
   session: { silenceTimeoutMs: 12000, voiceLevel: 3000 },
 });
 
-// Fields the firmware stores in NVS + applies at boot. `mode` expands into
-// audio.fullDuplex/fixedBeam (applied), plus the beam azimuth. Still compile-time
-// (reflash), so NOT applied: audio.micChannel and session.* — see PROVISIONING.md.
-export const APPLIED_FIELDS = [
-  "mode",
-  "wifi.ssid",
-  "wifi.password",
-  "livekit.tokenServerUrl",
-  "telemetry.syslogIp",
-  "telemetry.syslogPort",
-  "session.silenceTimeoutMs",
-  "session.voiceLevel",
-  "adoption.orgSecret",
-  "audio.fullDuplex",
-  "audio.fixedBeam",
-  "audio.fixedBeamAzimuthDeg",
-];
-
 export const serialize = (config: DeviceConfig): string => JSON.stringify(config, null, 2);
 
-// What the firmware answers to `sebastian.config.get`: the stored config in the
-// v1 shape (only the keys present in NVS) plus two facts the form needs. The
-// WiFi password never leaves the device; `passwordSet` says whether there is one.
+// Preview and serial logs must never print credentials automatically. Export is
+// an explicit operator action and intentionally contains entered credentials.
+export function preview(config: DeviceConfig): string {
+  return serialize({
+    ...config,
+    wifi: { ...config.wifi, ...(config.wifi.password !== undefined ? { password: "[redacted]" } : {}) },
+    ...(config.device?.secret !== undefined ? { device: { secret: "[redacted]" } } : {}),
+  });
+}
+
 export interface DeviceDump {
   provisioned: boolean;
   passwordSet: boolean;
+  secretSet: boolean;
+  deviceId?: string;
+  storedDeviceSecret?: string;
   config: DeviceConfig;
 }
 
+const object = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+
 export function parseDump(input: unknown): DeviceDump {
-  const src = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const wifi = (src.wifi && typeof src.wifi === "object" ? src.wifi : {}) as Record<string, unknown>;
+  const src = object(input);
+  const wifi = object(src.wifi);
+  const device = object(src.device);
+  const legacy = object(src.adoption);
+  const config = mergeConfig(src);
+  // Physical USB pairing readback stays separate from the editable document.
+  // It must never reach the automatic preview/export or be sent back implicitly.
+  delete config.wifi.password;
+  delete config.device;
   return {
     provisioned: src.provisioned === true,
     passwordSet: wifi.passwordSet === true,
-    config: mergeConfig(src),
+    secretSet: device.secretSet === true || legacy.deviceSecretSet === true ||
+      typeof device.secret === "string" || typeof legacy.deviceSecret === "string",
+    ...(typeof device.id === "string" ? { deviceId: device.id } : {}),
+    ...(typeof device.secret === "string" && device.secret
+      ? { storedDeviceSecret: device.secret }
+      : typeof legacy.deviceSecret === "string" && legacy.deviceSecret
+        ? { storedDeviceSecret: legacy.deviceSecret } : {}),
+    config,
   };
 }
 
-// The line sent to the board. While the loaded password stays locked in the
-// form, the key is omitted so the firmware keeps the stored one (an explicit ""
-// would turn it into an open network).
 export function payloadFor(config: DeviceConfig, keepStoredPassword: boolean): string {
-  const out: DeviceConfig = keepStoredPassword
-    ? { ...config, wifi: { ssid: config.wifi.ssid, hidden: config.wifi.hidden } as DeviceConfig["wifi"] }
-    : config;
+  const out = { ...config, wifi: { ...config.wifi } };
+  if (keepStoredPassword) delete out.wifi.password;
   return JSON.stringify(out);
 }
 
-// Deep-merge a partial (imported) config onto the defaults so missing keys are
-// filled and unknown keys dropped — keeps the form + payload well-formed.
+// Only supported keys survive import. Legacy device credentials migrate, while
+// organization adoption and static server authority fields are discarded.
 export function mergeConfig(input: unknown): DeviceConfig {
   const base = defaultConfig();
-  if (!input || typeof input !== "object") return base;
-  const src = input as Record<string, unknown>;
-  const section = <T extends object>(key: keyof DeviceConfig, fallback: T): T => {
-    const value = src[key as string];
-    return value && typeof value === "object" ? { ...fallback, ...(value as object) } : fallback;
+  const src = object(input);
+  if (src.schema !== undefined && src.schema !== CONFIG_SCHEMA) throw new Error("Unsupported configuration schema");
+  const section = <T extends object>(key: string, fallback: T): T => {
+    const values = object(src[key]);
+    const result = { ...fallback };
+    for (const field of Object.keys(fallback) as (keyof T)[]) {
+      if (values[field as string] !== undefined) {
+        const value = values[field as string];
+        if (typeof value !== typeof fallback[field]) throw new Error(`Invalid ${key}.${String(field)}`);
+        result[field] = value as T[keyof T];
+      }
+    }
+    return result;
   };
-  return {
+  if (src.mode !== undefined && !OPERATING_MODES.includes(src.mode as OperatingMode)) throw new Error("Invalid operating mode");
+  const result: DeviceConfig = {
     schema: CONFIG_SCHEMA,
-    mode: isMode(src.mode) ? src.mode : base.mode,
+    mode: (src.mode as OperatingMode | undefined) ?? base.mode,
     wifi: section("wifi", base.wifi),
     livekit: section("livekit", base.livekit),
     telemetry: section("telemetry", base.telemetry),
     audio: section("audio", base.audio),
     session: section("session", base.session),
-    ...adoptionOf(src.adoption),
   };
-}
-
-// Only the secrets themselves travel back to the board; the dump's *Set flags
-// stay out of the document.
-function adoptionOf(value: unknown): Pick<DeviceConfig, "adoption"> {
-  if (!value || typeof value !== "object") return {};
-  const src = value as Record<string, unknown>;
-  const adoption: NonNullable<DeviceConfig["adoption"]> = { orgSecret: typeof src.orgSecret === "string" ? src.orgSecret : "" };
-  if (typeof src.deviceSecret === "string" && src.deviceSecret) adoption.deviceSecret = src.deviceSecret;
-  if (!adoption.orgSecret && !adoption.deviceSecret) return {};
-  return { adoption };
-}
-
-// Pre-fill served by a control room's dashboard next to the embedded installer
-// (dashboard route /installer/control-room.json). Absent on GitHub Pages.
-export interface ControlRoomPrefill {
-  name: string;
-  tokenServerUrl: string;
-  syslogIp: string;
-  syslogPort: number;
-  orgSecret: string;
-}
-
-export function applyPrefill(config: DeviceConfig, room: ControlRoomPrefill): DeviceConfig {
-  return {
-    ...config,
-    livekit: { ...config.livekit, tokenServerUrl: room.tokenServerUrl },
-    telemetry: { ...config.telemetry, syslogIp: room.syslogIp, syslogPort: room.syslogPort || 514 },
-    ...(room.orgSecret ? { adoption: { orgSecret: room.orgSecret } } : {}),
-  };
+  const wifi = object(src.wifi);
+  if (wifi.password !== undefined) {
+    if (typeof wifi.password !== "string") throw new Error("Invalid wifi.password");
+    result.wifi.password = wifi.password;
+  }
+  const device = object(src.device);
+  const legacy = object(src.adoption);
+  const secret = device.secret !== undefined ? device.secret : legacy.deviceSecret;
+  if (secret !== undefined) {
+    if (typeof secret !== "string") throw new Error("Invalid device.secret");
+    result.device = { secret };
+  }
+  if (src.profiles !== undefined) {
+    if (!Array.isArray(src.profiles)) throw new Error("profiles must be an array");
+    // Preserve profiles verbatim; validation blocks malformed/unsupported fields.
+    result.profiles = structuredClone(src.profiles) as DeviceProfile[];
+  }
+  if (src.activeProfile !== undefined) {
+    if (typeof src.activeProfile !== "string") throw new Error("Invalid activeProfile");
+    result.activeProfile = src.activeProfile;
+  }
+  return result;
 }

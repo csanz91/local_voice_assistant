@@ -1,17 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zetesis-labs.github.io/Sebastian/installer/sebastian-config.schema.json",
-  "title": "Sebastian device provisioning config",
+  "title": "ESP32 local provisioning configuration",
+  "description": "Partial updates retain omitted NVS values. The UI fills defaults for most fields; omitted credentials and profiles stay omitted. Full command including prefix/newline must fit in 8191 bytes.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema",
-    "mode",
-    "wifi",
-    "livekit",
-    "telemetry",
-    "audio",
-    "session"
+    "schema"
   ],
   "properties": {
     "schema": {
@@ -26,101 +20,87 @@
     "wifi": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "ssid",
-        "hidden"
-      ],
       "properties": {
         "ssid": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 32
+          "maxLength": 32,
+          "description": "Maximum 32 UTF-8 bytes."
         },
         "password": {
           "type": "string",
           "maxLength": 64,
-          "description": "Omit the key to keep the password already stored on the device"
-        },
-        "hidden": {
-          "type": "boolean"
+          "description": "Omit to keep stored password; empty selects open network. Maximum 64 UTF-8 bytes."
         }
       }
     },
     "livekit": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "tokenServerUrl",
-        "deviceIdentity",
-        "room",
-        "agentName"
-      ],
       "properties": {
         "tokenServerUrl": {
-          "type": "string",
-          "format": "uri",
-          "pattern": "^https?://",
-          "maxLength": 256
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^/@#\\s]+(?::[0-9]+)?(?:/[^#\\s]*)?$",
+              "maxLength": 255
+            }
+          ],
+          "description": "Complete session POST URL including path, maximum 255 UTF-8 bytes; no URL credentials or fragments. Firmware validates URL and TLS."
         },
-        "deviceIdentity": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
-        },
-        "room": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
-        },
-        "agentName": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
+        "allowInsecureHttp": {
+          "type": "boolean",
+          "default": false,
+          "description": "Explicit local development opt-in. HTTP exposes device credentials in transit."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "tokenServerUrl"
+            ],
+            "properties": {
+              "tokenServerUrl": {
+                "pattern": "^http://"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "allowInsecureHttp"
+            ],
+            "properties": {
+              "allowInsecureHttp": {
+                "const": true
+              }
+            }
+          }
+        }
+      ]
     },
-    "telemetry": {
+    "device": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "syslogIp",
-        "syslogPort",
-        "otlpEndpoint",
-        "grafanaUrl"
-      ],
       "properties": {
-        "syslogIp": {
+        "secret": {
           "type": "string",
-          "description": "IPv4 of the UDP syslog receiver; empty disables the sink"
-        },
-        "syslogPort": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535
-        },
-        "otlpEndpoint": {
-          "$ref": "#/$defs/optionalUrl"
-        },
-        "grafanaUrl": {
-          "$ref": "#/$defs/optionalUrl"
+          "maxLength": 1024,
+          "pattern": "^[!-~]*$",
+          "description": "Omit to keep stored credential. Empty clears it; provision a voice-scoped device JWT before opening a session. Returned only by the physical USB pairing readback; kept out of automatic previews and logs."
         }
       }
     },
     "audio": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "micChannel",
-        "fixedBeam",
-        "fixedBeamAzimuthDeg",
-        "fullDuplex"
-      ],
       "properties": {
-        "micChannel": {
-          "enum": [
-            "left",
-            "right"
-          ]
+        "fullDuplex": {
+          "type": "boolean"
         },
         "fixedBeam": {
           "type": "boolean"
@@ -129,62 +109,92 @@
           "type": "number",
           "minimum": -180,
           "maximum": 180
-        },
-        "fullDuplex": {
-          "type": "boolean"
         }
       }
     },
     "session": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "silenceTimeoutMs",
-        "voiceLevel"
-      ],
       "properties": {
         "silenceTimeoutMs": {
           "type": "integer",
-          "minimum": 1000,
+          "minimum": 5000,
           "maximum": 120000
         },
         "voiceLevel": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 1,
           "maximum": 32767
         }
       }
     },
-    "adoption": {
+    "telemetry": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "orgSecret": {
+        "syslogIp": {
           "type": "string",
-          "description": "Organization secret authorizing network adoption"
+          "description": "Optional IPv4 UDP syslog receiver. Empty disables remote logs."
         },
-        "deviceSecret": {
-          "type": "string"
+        "syslogPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
         }
       }
     },
-    "configVersion": {
-      "type": "string"
+    "profiles": {
+      "type": "array",
+      "maxItems": 6,
+      "description": "Stored JSON must fit in 1023 UTF-8 bytes. Empty array selects built-in profiles; omitted preserves current profiles. Names must be unique.",
+      "items": {
+        "$ref": "#/$defs/profile"
+      }
+    },
+    "activeProfile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 23,
+      "description": "Stored profile name, maximum 23 UTF-8 bytes. Omit to preserve existing selection."
     }
   },
   "$defs": {
-    "optionalUrl": {
-      "anyOf": [
-        {
-          "const": ""
-        },
-        {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
           "type": "string",
-          "format": "uri",
-          "pattern": "^https?://",
-          "maxLength": 256
+          "minLength": 1,
+          "maxLength": 23
+        },
+        "mode": {
+          "enum": [
+            "agent",
+            "usb_mic"
+          ]
+        },
+        "beamAzimuthDeg": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "fullDuplex": {
+          "type": "boolean"
+        },
+        "fixedBeam": {
+          "type": "boolean"
+        },
+        "wifi": {
+          "type": "boolean"
+        },
+        "telemetry": {
+          "type": "boolean"
         }
-      ]
+      }
     }
   }
 }

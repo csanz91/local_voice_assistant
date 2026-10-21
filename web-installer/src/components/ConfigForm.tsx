@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { applyMode, type DeviceConfig } from "../lib/config";
+import { useEffect, useRef, useState } from "react";
+import { applyMode, type DeviceConfig, type DeviceProfile } from "../lib/config";
 import type { FieldIssue } from "../lib/validate";
 import {
   MODES,
@@ -17,6 +17,7 @@ interface Props {
   config: DeviceConfig;
   onChange: (next: DeviceConfig) => void;
   issues: FieldIssue[];
+  onProfilesInvalid: (invalid: boolean) => void;
   // "keep": the board has a password we never see and the form keeps it (field
   // locked). "edit": the operator chose to replace it. undefined: no stored one.
   storedPassword?: "keep" | "edit";
@@ -80,7 +81,7 @@ function Locks({ locks }: { locks: Lock[] }) {
 // Module-level on purpose: a component defined inside ConfigForm would be a new
 // type on every render, so React would remount the input on each keystroke and
 // the field would lose focus after one character.
-type FieldProps = Props & { f: FieldMeta };
+type FieldProps = Omit<Props, "onProfilesInvalid"> & { f: FieldMeta };
 
 function Field({ f, config, onChange, issues, storedPassword, onStoredPassword }: FieldProps) {
   const issueFor = (path?: string) => (path ? issues.find((i) => i.path === path) : undefined);
@@ -120,7 +121,7 @@ function Field({ f, config, onChange, issues, storedPassword, onStoredPassword }
     );
   }
 
-  const issue = issueFor(f.issuePath);
+  const issue = issueFor(f.issuePath ?? f.path);
   const passwordEditing = f.path === "wifi.password" && storedPassword === "edit";
   const hint = passwordEditing ? (
     <span className="flex flex-wrap items-center gap-x-2">
@@ -129,7 +130,7 @@ function Field({ f, config, onChange, issues, storedPassword, onStoredPassword }
         type="button"
         className="font-semibold text-brand hover:underline"
         onClick={() => {
-          onChange(setField(config, "wifi.password", ""));
+          onChange(setField(config, "wifi.password", undefined));
           onStoredPassword?.("keep");
         }}
       >
@@ -154,7 +155,7 @@ function Field({ f, config, onChange, issues, storedPassword, onStoredPassword }
   );
 }
 
-export function ConfigForm({ config, onChange, issues, storedPassword, onStoredPassword }: Props) {
+export function ConfigForm({ config, onChange, issues, storedPassword, onStoredPassword, onProfilesInvalid }: Props) {
   const [advanced, setAdvanced] = useState(false);
 
   const visible = (fields: FieldMeta[]) => fields.filter((f) => advanced || !f.advanced);
@@ -243,6 +244,27 @@ export function ConfigForm({ config, onChange, issues, storedPassword, onStoredP
         );
       })}
 
+      <fieldset className="border-t border-line pt-5">
+        <legend className="mb-3 font-serif text-lg text-fg">Device credential</legend>
+        <label className="flex items-center gap-2 text-sm text-fg-soft">
+          <input type="checkbox" checked={config.device?.secret !== undefined} onChange={(e) => {
+            const next = { ...config };
+            if (e.target.checked) next.device = { secret: "" };
+            else delete next.device;
+            onChange(next);
+          }} />
+          Replace the stored credential
+        </label>
+        <p className="mt-2 text-sm text-fg-muted">Untouched keeps the credential already on the board. Enable replacement and leave empty to clear it; the next boot generates a fresh credential.</p>
+        {config.device?.secret !== undefined && <div className="mt-4"><Field
+          f={{ path: "device.secret", label: "New device credential", type: "password", applied: true,
+            help: "Finite voice-scoped device JWT issued by your IoTCloud account for this device. Renew before expiry." }}
+          config={config} onChange={onChange} issues={issues}
+        /></div>}
+      </fieldset>
+
+      <ProfilesEditor config={config} onChange={onChange} issues={issues} onInvalid={onProfilesInvalid} />
+
       {/* Advanced disclosure */}
       <div className="flex items-center justify-between border-t border-line pt-4">
         <span className="text-[13px] text-fg-muted">
@@ -255,4 +277,63 @@ export function ConfigForm({ config, onChange, issues, storedPassword, onStoredP
       </div>
     </div>
   );
+}
+
+
+function ProfilesEditor({ config, onChange, issues, onInvalid }: {
+  config: DeviceConfig; onChange: (next: DeviceConfig) => void;
+  issues: FieldIssue[]; onInvalid: (invalid: boolean) => void;
+}) {
+  const initial = config.profiles === undefined ? "" : JSON.stringify(config.profiles, null, 2);
+  const [text, setText] = useState(initial);
+  const [draftError, setDraftError] = useState("");
+  const saved = useRef(JSON.stringify(config.profiles));
+  useEffect(() => {
+    const next = JSON.stringify(config.profiles);
+    if (saved.current !== next) {
+      saved.current = next;
+      setText(config.profiles === undefined ? "" : JSON.stringify(config.profiles, null, 2));
+      setDraftError("");
+      onInvalid(false);
+    }
+  }, [config.profiles, onInvalid]);
+  const profileIssues = issues.filter((issue) => issue.path === "profiles" || issue.path === "activeProfile");
+  return <fieldset className="border-t border-line pt-5">
+    <legend className="mb-3 font-serif text-lg text-fg">Local profiles and USB microphone</legend>
+    <p className="mb-3 text-sm text-fg-muted">Blank keeps the profiles stored on the board. An empty array restores the built-in agente and micro-usb profiles. Profiles may override audio, WiFi and telemetry. Select the active profile by name.</p>
+    <label className="grid gap-2 text-sm text-fg-soft">Profiles (JSON array)
+      <textarea rows={8} value={text} placeholder={'[{"name":"agente","mode":"agent"},{"name":"micro-usb","mode":"usb_mic","fixedBeam":false}]'}
+        className="w-full rounded-xl border border-line bg-black/20 p-3 font-mono text-xs"
+        onChange={(e) => {
+          const value = e.target.value;
+          setText(value);
+          try {
+            const profiles: unknown = value.trim() ? JSON.parse(value) : undefined;
+            if (profiles !== undefined && !Array.isArray(profiles)) throw new Error("Profiles must be a JSON array.");
+            const next = { ...config };
+            if (profiles === undefined) delete next.profiles;
+            else next.profiles = profiles as DeviceProfile[];
+            saved.current = JSON.stringify(profiles);
+            setDraftError("");
+            onInvalid(false);
+            onChange(next);
+          } catch {
+            setDraftError("Enter a valid JSON array before sending.");
+            onInvalid(true);
+          }
+        }} />
+    </label>
+    <label className="mt-3 grid gap-2 text-sm text-fg-soft">Active profile
+      <input value={config.activeProfile ?? ""} placeholder="agente"
+        className="rounded-xl border border-line bg-black/20 p-3"
+        onChange={(e) => {
+          const next = { ...config };
+          if (e.target.value) next.activeProfile = e.target.value;
+          else delete next.activeProfile;
+          onChange(next);
+        }} />
+    </label>
+    {draftError && <p role="alert" className="mt-2 text-sm text-danger">{draftError}</p>}
+    {profileIssues.map((issue, index) => <p role="alert" key={index} className="mt-2 text-sm text-danger">{issue.message}</p>)}
+  </fieldset>;
 }

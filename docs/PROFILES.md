@@ -8,7 +8,7 @@ stored in NVS; the active profile decides what Sebastian IS after boot:
 - optional overrides of the audio config: `fullDuplex`, `fixedBeam`,
   `beamAzimuthDeg`
 - `wifi`: en `usb_mic`, `false` desactiva la red; sin esa exclusión se habilitan
-  syslog y control remoto. `telemetry` se conserva en el perfil, pero actualmente
+  syslog opcional. `telemetry` se conserva en el perfil, pero actualmente
   no controla por separado el arranque de la telemetría.
 
 Fields a profile does not set are inherited from the legacy NVS keys /
@@ -38,25 +38,9 @@ zero-config**:
   at the PC wins).
 
 The explicit `usb_mic` profile remains for a pure offline mic (`wifi: false`),
-and everything below still applies for fleet management.
+and can be selected locally.
 
 ## Switching profiles
-
-**Red (panel / API)** — ambos modos consultan el servidor cada 30 s mediante
-`GET /v1/devices/{mac}/desired-profile?current=<active>&cfg=<version>&fw=<firmware>&ev=<evento>`.
-La petición usa `X-Device-Id` y `X-Device-Secret`. La unidad genera su secreto;
-la adopción o incorporación con el secreto de organización lo registra en el
-control room antes de usar el sondeo autenticado.
-
-Elegir un perfil en **Dispositivos**, o enviar
-`PUT /v1/admin/devices/{id}/desired-profile {"name":"agente"}` con la credencial
-administrativa, hace que la unidad lo persista y reinicie al recibirlo. Durante
-una sesión, el reinicio se aplaza hasta su cierre. `X-Desired-Config` comunica
-también cambios de configuración, recuperados desde `/v1/devices/{mac}/config`.
-El recorrido de flota está en [la especificación 12](implementation/12-fleet-adoption-functional-spec.md).
-
-En `usb_mic`, WiFi usa modem sleep y transporta control/telemetría, nunca el
-audio USB. Un perfil con `wifi: false` mantiene el micrófono sin conexión.
 
 **Boot selector (on-device)** — when the ring lights up dim white shortly
 after plugging in (~2-3 s, once the XVF is up), double-tap the mute button.
@@ -68,7 +52,7 @@ merely boots muted never triggers the selector (zero button *changes*).
 **Serial (installer / scripts)** — one line over USB-Serial-JTAG during the
 **5 s provisioning window** at every boot, in BOTH modes (convivencia keeps
 TinyUSB up alongside the agent, so the PHY stops being serial right after the
-window; steady-state administration is the network path above):
+window; unplug/replug to reopen USB serial):
 
 Una lectura `sebastian.config.get` amplía la ventana a **120 s** antes de que
 TinyUSB tome el periférico; véase [aprovisionamiento](../web-installer/public/PROVISIONING.md).
@@ -95,7 +79,11 @@ accepts a `profiles` array plus `activeProfile`:
 ```
 
 Limits: max 6 profiles, names up to 23 chars; the whole provisioning line must
-fit the 1 KB serial buffer.
+fit the 8 KB boot-window command buffer. The compact `profiles` array must
+fit within **1023 UTF-8 bytes** (the shared C loader capacity includes one NUL).
+Direct USB provisioning and the CLI reject larger arrays before NVS writes.
+Command storage is temporary PSRAM; the receiver task and USB-serial driver are
+released before TinyUSB takes the PHY.
 
 ## Safe boot (anti-brick)
 

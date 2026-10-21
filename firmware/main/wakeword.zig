@@ -34,8 +34,8 @@ extern fn mww_last_prob() f32;
 const MODEL = @embedFile("okay_nabu.tflite");
 // Detection threshold. The stock "okay_nabu" model (Kevin Ahrendt / ESPHome) is
 // well separated — its recommended cutoff is 0.97. We still run the two-stage
-// split (ROADMAP §7 #1): the board favors RECALL and PRECISION lives server-side
-// (agent/wake_verify.py re-verifies each fire against the pre-roll). Field data
+// split: the board favors recall; any additional verification belongs server-side
+// (using the bounded pre-roll). Field data
 // 2026-07-14: genuine "Okay Nabu" peaks at 96-98% while every false trigger
 // (TV/ambient speech) stayed ≤77%, so 0.70 was too loose — background chatter
 // crossed the 5-frame moving average and opened phantom sessions. 0.95 sits

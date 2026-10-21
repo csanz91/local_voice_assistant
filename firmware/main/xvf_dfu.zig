@@ -222,7 +222,7 @@ const GPI_READ: u8 = 0;
 
 /// Raw GPI values {gpi0, gpi1, gpi2} (GPI_READ_VALUES, 3 bytes after the
 /// status byte). null on I2C failure. The MUTE button is one of these bits
-/// (meeting recordings, RM-02): the XVF toggles the mute GPO by itself on the
+/// The XVF toggles the mute GPO by itself on the
 /// press, this is the only way to see how long it is held.
 pub fn readGpi() ?[3]u8 {
     const req = [_]u8{ RESID_GPI, GPI_READ | READ_BIT, 4 };

@@ -179,7 +179,23 @@ static void on_eng_participant_info(const livekit_pb_participant_info_t* info, b
     if (room->options.on_participant_info == NULL) {
         return;
     }
+    livekit_attribute_t attributes[LIVEKIT_PARTICIPANT_ATTRIBUTES_MAX];
+    livekit_track_info_t tracks[LIVEKIT_PARTICIPANT_TRACKS_MAX];
+    for (size_t i = 0; i < info->attributes.count; i++) {
+        attributes[i] = (livekit_attribute_t){ info->attributes.entries[i].key, info->attributes.entries[i].value };
+    }
+    size_t track_count = info->tracks_count;
+    if (track_count > LIVEKIT_PARTICIPANT_TRACKS_MAX) track_count = LIVEKIT_PARTICIPANT_TRACKS_MAX;
+    for (size_t i = 0; i < track_count; i++) {
+        const livekit_pb_track_info_t *t = &info->tracks[i];
+        tracks[i] = (livekit_track_info_t){ t->sid, t->name, t->type, t->source, t->muted };
+    }
     const livekit_participant_info_t participant_info = {
+        .attributes = attributes,
+        .attributes_count = info->attributes.count,
+        .tracks = tracks,
+        .tracks_count = track_count,
+        .info_truncated = info->attributes.truncated || track_count < info->tracks_count,
         .sid = info->sid,
         .identity = info->identity,
         .name = info->name,
@@ -189,6 +205,21 @@ static void on_eng_participant_info(const livekit_pb_participant_info_t* info, b
         .state = (livekit_participant_state_t)info->state,
     };
     room->options.on_participant_info(&participant_info, room->options.ctx);
+}
+
+static void on_eng_local_track_published(const livekit_pb_track_published_response_t *info, void *ctx)
+{
+    livekit_room_t *room = ctx;
+    if (!room->options.on_local_track_published) return;
+    const livekit_pb_track_info_t *t = &info->track;
+    const livekit_track_info_t track = { t->sid, t->name, t->type, t->source, t->muted };
+    room->options.on_local_track_published(info->cid, &track, room->options.ctx);
+}
+
+static bool on_eng_audio_receive_filter(void *ctx)
+{
+    livekit_room_t *room = ctx;
+    return !room->options.audio_receive_filter || room->options.audio_receive_filter(room->options.ctx);
 }
 
 livekit_err_t livekit_room_create(livekit_room_handle_t *handle, const livekit_room_options_t *options)
@@ -235,6 +266,9 @@ livekit_err_t livekit_room_create(livekit_room_handle_t *handle, const livekit_r
 
     engine_options_t eng_options = {
         .media = media_options,
+        .on_local_track_published = on_eng_local_track_published,
+        .enable_preconnect_buffer = options->enable_preconnect_buffer,
+        .audio_receive_filter = on_eng_audio_receive_filter,
         .on_state_changed = on_eng_state_changed,
         .on_data_packet = on_eng_data_packet,
         .on_room_info = on_eng_room_info,

@@ -60,14 +60,8 @@ CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
 CONFIG_ESP_COREDUMP_CHECK_BOOT=n
 
 
-# --- Fleet: mDNS announce (announce.c) — task and allocations in PSRAM so the
-# scarce internal SRAM (~37 KB free in session) is untouched.
-CONFIG_MDNS_TASK_CREATE_FROM_SPIRAM=y
-CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
-CONFIG_MDNS_MAX_SERVICES=4
-
 # The whole agent loop runs on the main task (app_main → runAgent); the IDF
-# default of 3584 B overflowed with one more frame (meeting sessions, block B).
+# main task needs room for session setup and audio teardown.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # El canario solo se mira en el cambio de contexto: para entonces el
@@ -75,10 +69,10 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # un marco de excepcion basura. El watchpoint para en la instruccion exacta.
 CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
 
-# Estos tres solo existian en el sdkconfig generado (gitignorado), no aqui: un
-# build limpio producia un firmware distinto en silencio. Fijados al valor con
-# el que la unidad lleva funcionando.
+# Keep the previously validated peripheral interrupt placement.
 CONFIG_PERIPH_CTRL_FUNC_IN_IRAM=y
-CONFIG_MDNS_MAX_SERVICES=10
-CONFIG_MDNS_TASK_CREATE_FROM_INTERNAL=y
-CONFIG_MDNS_MEMORY_ALLOC_INTERNAL=y
+
+# Session HTTPS and LiveKit WSS validate server chains using the IDF root bundle.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# CONFIG_ESP_TLS_INSECURE is not set

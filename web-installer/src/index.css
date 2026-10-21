@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Zetesis / Sebastian design tokens (Tailwind v4 @theme → utilities like
+/* Installer design tokens (Tailwind v4 @theme → utilities like
    bg-surface, text-brand, border-line, etc.) */
 @theme {
   --color-brand: #ff9000;

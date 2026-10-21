@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { applyPrefill, defaultConfig, mergeConfig, serialize, type ControlRoomPrefill, type DeviceConfig } from "./lib/config";
+import { defaultConfig, mergeConfig, preview, serialize, type DeviceConfig, type DeviceDump } from "./lib/config";
 import { hasBlockingErrors, validate, type FieldIssue } from "./lib/validate";
 import { HOLD_AFTER_LOAD_MS, linkAgeMs, linkOpen, loadConfig, sendConfig } from "./lib/serial";
 import { ConfigForm } from "./components/ConfigForm";
 import { Btn, Card, Eyebrow, SectionTitle, cx } from "./components/ui";
-import { Bolt, Check, Chevron, Copy, Download, Github, Upload, Wifi } from "./components/icons";
+import { Bolt, Check, Chevron, Copy, Download, Upload, Wifi } from "./components/icons";
 
 type Tone = "" | "ok" | "warn";
 const BASE = import.meta.env.BASE_URL;
 
 export default function App() {
   const [config, setConfig] = useState<DeviceConfig>(defaultConfig);
+  const [formRevision, setFormRevision] = useState(0);
+  const [pairing, setPairing] = useState<Pick<DeviceDump, "deviceId" | "storedDeviceSecret"> | null>(null);
+  const [pairingRevealed, setPairingRevealed] = useState(false);
+  const [pairingMsg, setPairingMsg] = useState("");
   const [sendMsg, setSendMsg] = useState("With the board flashed and connected via USB, click send and choose the port.");
   const [sendTone, setSendTone] = useState<Tone>("");
   const [sending, setSending] = useState(false);
@@ -23,58 +27,45 @@ export default function App() {
   const [installReady, setInstallReady] = useState(false);
   const [firmwareVersion, setFirmwareVersion] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
-  const [room, setRoom] = useState<ControlRoomPrefill | null>(null);
-
-  // Embedded in a control room's dashboard: pre-fill token server, syslog and
-  // the organization secret so the operator only types the WiFi (RF-02).
-  useEffect(() => {
-    if (!import.meta.env.VITE_EMBEDDED) return;
-    fetch(`${BASE}control-room.json`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((data: ControlRoomPrefill) => {
-        setRoom(data);
-        setConfig((prev) => applyPrefill(prev, data));
-        setSendTone("ok");
-        setSendMsg(`Formulario prerrellenado con el control room ${data.name}: solo falta la WiFi.`);
-      })
-      .catch(() => {
-        setSendTone("warn");
-        setSendMsg("No se pudo leer la configuración de este control room; rellena el formulario a mano.");
-      });
-  }, []);
-
   const fileRef = useRef<HTMLInputElement>(null);
   const issues = useMemo<FieldIssue[]>(() => validate(config), [config]);
-  const blocked = hasBlockingErrors(issues);
+  const [profilesInvalid, setProfilesInvalid] = useState(false);
+  const blocked = profilesInvalid || hasBlockingErrors(issues);
 
   useEffect(() => {
-    // Is a real merged image published next to the page? If not, ESP Web Tools
+    // Are the sparse firmware parts available next to the page? ESP Web Tools
     // has nothing to flash — say so instead of a dead button.
     (async () => {
       try {
         const res = await fetch(`${BASE}manifest.json`, { cache: "no-store" });
         if (!res.ok) throw new Error();
         const manifest = await res.json();
-        const part = manifest?.builds?.[0]?.parts?.[0]?.path;
-        if (!part) throw new Error();
+        const parts = manifest?.builds?.[0]?.parts;
+        const offsets = [0, 0x8000, 0x10000];
+        if (!Array.isArray(parts) || parts.length !== 3 ||
+            parts.some((part, i) => part.offset !== offsets[i] || typeof part.path !== "string")) throw new Error("invalid-sparse-manifest");
         setFirmwareVersion(typeof manifest?.version === "string" ? manifest.version : null);
         // Validate it's a REAL ESP image, not an SPA-fallback index.html. A dev
         // server returns HTML (200) for a missing .bin; ESP Web Tools would then
         // flash that HTML over the bootloader and brick the chip. Require the
         // ESP32 image magic byte 0xE9 (HTML starts with '<' = 0x3C).
-        const bin = await fetch(new URL(part, res.url), {
-          cache: "no-store",
-          headers: { Range: "bytes=0-3" },
-        });
-        const ct = bin.headers.get("content-type") ?? "";
-        if (!bin.ok || ct.includes("text/html")) throw new Error("html-fallback");
-        const firstByte = new Uint8Array(await bin.arrayBuffer())[0];
-        if (firstByte !== 0xe9) throw new Error("not-an-esp-image");
+        for (const part of parts) {
+          const bin = await fetch(new URL(part.path, res.url), {
+            cache: "no-store", headers: { Range: "bytes=0-3" },
+          });
+          const ct = bin.headers.get("content-type") ?? "";
+          if (!bin.ok || ct.includes("text/html")) throw new Error("html-fallback");
+          const bytes = new Uint8Array(await bin.arrayBuffer());
+          const valid = part.offset === 0x8000
+            ? bytes[0] === 0xaa && bytes[1] === 0x50
+            : bytes[0] === 0xe9;
+          if (!valid) throw new Error("invalid-firmware-part");
+        }
         setInstallReady(true);
-        setSourceMsg(import.meta.env.VITE_EMBEDDED ? "Factory image packaged with this control room, ready to flash." : "Factory image ready to flash.");
+        setSourceMsg("Firmware parts ready. Leave Erase device unchecked to preserve settings.");
       } catch {
         setInstallReady(false);
-        setSourceMsg("No valid firmware image published. Provision an already flashed board (step 3) or use an external .bin (Advanced).");
+        setSourceMsg("No valid firmware image published. Provision an already flashed board (step 3), or package the firmware parts first (Advanced).");
       }
     })();
   }, []);
@@ -99,6 +90,9 @@ export default function App() {
 
   async function load() {
     setLoading(true);
+    setPairing(null);
+    setPairingRevealed(false);
+    setPairingMsg("");
     setSendTone("");
     setSendMsg("Leyendo la config guardada en la placa…");
     setLog([]);
@@ -108,6 +102,9 @@ export default function App() {
       case "ok": {
         const { dump } = result;
         setConfig(dump.config);
+        setPairing({ deviceId: dump.deviceId, storedDeviceSecret: dump.storedDeviceSecret });
+        setFormRevision((value) => value + 1);
+        setProfilesInvalid(false);
         setStoredPassword(dump.passwordSet ? "keep" : undefined);
         setHoldLeft(Math.round(HOLD_AFTER_LOAD_MS / 1000));
         setSendTone("ok");
@@ -142,6 +139,11 @@ export default function App() {
       .text()
       .then((text) => {
         setConfig(mergeConfig(JSON.parse(text)));
+        setPairing(null);
+        setPairingRevealed(false);
+        setPairingMsg("");
+        setFormRevision((value) => value + 1);
+        setProfilesInvalid(false);
         setStoredPassword(undefined);
         setSendTone("ok");
         setSendMsg(`Config importada desde ${file.name}.`);
@@ -168,6 +170,18 @@ export default function App() {
     setSendMsg("Config copied to clipboard.");
   }
 
+  async function copyPairing() {
+    if (!pairing?.deviceId || !pairing.storedDeviceSecret) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify({
+        deviceId: pairing.deviceId, deviceSecret: pairing.storedDeviceSecret,
+      }, null, 2));
+      setPairingMsg("Pairing credentials copied. Register them with your backend and clear the clipboard afterward.");
+    } catch {
+      setPairingMsg("Clipboard access failed. Reveal the credential to copy it manually.");
+    }
+  }
+
   async function send() {
     if (blocked) {
       setSendTone("warn");
@@ -185,6 +199,9 @@ export default function App() {
       case "ok":
         setSendTone("ok");
         setSendMsg("✓ Config accepted. The board will restart and connect.");
+        setPairing(null);
+        setPairingRevealed(false);
+        setPairingMsg("");
         setStoredPassword(undefined);
         break;
       case "rejected":
@@ -233,7 +250,7 @@ export default function App() {
         {/* Hero + install (step 1) */}
         <Card className="grid items-center gap-8 p-8 md:grid-cols-[1.15fr_0.85fr]">
           <div className="grid gap-5">
-            <Eyebrow>{room ? `Control room · ${room.name}` : "ReSpeaker XVF3800 + XIAO ESP32-S3"}</Eyebrow>
+            <Eyebrow>ReSpeaker XVF3800 + XIAO ESP32-S3</Eyebrow>
             <h1 className="font-serif text-[clamp(34px,5vw,52px)] font-medium leading-[1.03] text-fg">
               Install Sebastian from your browser
             </h1>
@@ -291,28 +308,45 @@ export default function App() {
             title="Configure the unit"
             hint={
               <>
-                Pick a mode, then fine-tune.{" "}
-                <span className="font-mono text-brand">NVS</span> fields apply today;{" "}
-                <span className="font-mono text-fg-muted">v2</span> fields are sent but need a
-                firmware update to take effect.
+                Pick a mode, configure your full session endpoint, then provision the board.
+                Local profiles can override the audio settings at boot.
               </>
             }
           />
           <ConfigForm
+            key={formRevision}
             config={config}
             onChange={setConfig}
             issues={issues}
+            onProfilesInvalid={setProfilesInvalid}
             storedPassword={storedPassword}
             onStoredPassword={setStoredPassword}
           />
 
+          {pairing && (pairing.deviceId || pairing.storedDeviceSecret) && (
+            <section className="mt-7 rounded-xl border border-line bg-black/20 p-4" aria-label="Private backend pairing">
+              <h3 className="font-semibold text-fg">Pair this device with your backend</h3>
+              <p className="mt-2 text-sm text-fg-muted">Read over the physical USB connection. Keep the credential private: it authenticates this device to your backend. It stays separate from configuration previews and exports.</p>
+              <p className="mt-3 text-sm text-fg-soft">Hardware device ID: <code className="select-all">{pairing.deviceId ?? "Unavailable with this firmware"}</code></p>
+              {pairing.storedDeviceSecret && <>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <Btn onClick={() => setPairingRevealed((shown) => !shown)}>{pairingRevealed ? "Hide credential" : "Reveal pairing credential"}</Btn>
+                  <Btn onClick={copyPairing} disabled={!pairing.deviceId}><Copy className="size-4" />Copy pairing credentials</Btn>
+                </div>
+                {pairingRevealed && <p className="mt-3 break-all rounded-lg border border-line p-3 font-mono text-sm text-fg-soft select-all">{pairing.storedDeviceSecret}</p>}
+              </>}
+              {!pairing.storedDeviceSecret && <p className="mt-3 text-sm text-fg-muted">No credential was returned. Provision a known per-device credential, restart and load again.</p>}
+              {pairingMsg && <p role="status" className="mt-3 text-sm text-fg-muted">{pairingMsg}</p>}
+            </section>
+          )}
+
           <details className="group mt-7 rounded-xl border border-line bg-black/20">
             <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-semibold text-fg-soft">
               <Chevron className="size-4 transition group-open:rotate-180" />
-              View the JSON that will be sent
+              View config (credentials redacted)
             </summary>
             <pre className="max-h-72 overflow-auto border-t border-line px-4 py-3 font-mono text-[12.5px] leading-relaxed text-[#f4c78f]">
-              {serialize(config)}
+              {preview(config)}
             </pre>
           </details>
         </Card>
@@ -323,7 +357,7 @@ export default function App() {
             step={3}
             eyebrow="Provisioning"
             title="Send the config to the board"
-            hint="No flashing required: it talks to the firmware already running. Load first to edit what the board already has (WiFi, token server…) instead of retyping it."
+            hint="No flashing required: it talks to the firmware already running. Load first to edit what the board already has (WiFi, session endpoint…) instead of retyping it."
           />
           <div className="mt-6 flex flex-wrap items-center gap-4">
             <Btn onClick={load} disabled={loading || sending} className="px-5 py-3 text-[15px]">
@@ -378,8 +412,8 @@ function JsonToolbar({
   return (
     <header className="sticky top-0 z-20 -mx-4 mb-5 flex items-center gap-3 px-4 py-3 backdrop-blur-md">
       <div className="pointer-events-none absolute inset-0 -z-10 border-b border-line bg-ink/70" />
-      <a href="./" className="flex items-center gap-2.5 text-fg" aria-label="Zetesis">
-        <img src={`${BASE}brand/zetesis-mark.svg`} alt="" className="size-7" />
+      <a href="./" className="flex items-center gap-2.5 text-fg" aria-label="Firmware installer">
+        <Bolt className="size-7 text-brand" />
         <span className="hidden text-sm font-semibold tracking-tight text-fg-soft sm:block">
           Sebastian Installer
         </span>
@@ -389,13 +423,7 @@ function JsonToolbar({
         <ToolbarBtn onClick={onDownload} icon={<Download className="size-4" />} label="Download" />
         <ToolbarBtn onClick={onCopy} icon={<Copy className="size-4" />} label="Copy" />
       </div>
-      <a
-        href="https://github.com/Zetesis-Labs/Sebastian"
-        className="grid size-9 place-items-center rounded-xl border border-line bg-white/[0.03] text-fg-soft transition hover:bg-white/[0.08]"
-        aria-label="GitHub"
-      >
-        <Github className="size-4" />
-      </a>
+
     </header>
   );
 }
@@ -420,11 +448,7 @@ function DeviceVisual() {
       <div className="relative grid aspect-[4/3] place-items-center overflow-hidden rounded-2xl border border-line bg-gradient-to-br from-white/[0.07] via-white/[0.025] to-brand/[0.08]">
         <div className="absolute inset-x-8 top-7 h-px bg-gradient-to-r from-transparent via-brand/45 to-transparent" />
         <div className="absolute inset-x-8 bottom-7 h-px bg-gradient-to-r from-transparent via-brand/35 to-transparent" />
-        <img
-          src={`${BASE}brand/zetesis-mark.svg`}
-          alt=""
-          className="relative z-10 w-[42%] max-w-44 drop-shadow-[0_22px_44px_rgba(255,125,0,0.24)]"
-        />
+        <span className="font-mono text-3xl text-brand">ESP32-S3</span>
       </div>
       <div className="flex flex-wrap gap-2">
         {tags.map((tag) => (
@@ -456,7 +480,7 @@ function Advanced({ installReady }: { installReady: boolean }) {
       </summary>
       <div className="border-t border-line px-6 pb-6 pt-5 text-sm text-fg-muted">
         <p>
-          The factory binary is built by CI in <code className="text-fg-soft">docs/installer/firmware/</code>.
+          Package bootloader, partition table, app and matching manifest in <code className="text-fg-soft">firmware/ next to this page</code>.
         </p>
       </div>
     </details>
@@ -465,11 +489,11 @@ function Advanced({ installReady }: { installReady: boolean }) {
 
 function Notes() {
   const items = [
-    "The firmware is a factory image: WiFi and token-server live in NVS, not in the binary. They are injected via Web Serial in step 3.",
+    "The firmware is a factory image: WiFi and the full session endpoint live in NVS, not in the binary. They are injected via Web Serial in step 3.",
     "The board only listens on USB during the first 5 s after power-up (then the USB becomes the microphone interface). Plug it in and click within that window; after a reset or a crash, re-plug it.",
-    "Load from device asks the firmware for the stored config (sebastian.config.get) and keeps the port open for 2 minutes so you can edit and send on the same connection. The WiFi password is never read back: the field stays locked and is kept unless you press Cambiar.",
+    "Load from device asks the firmware for the stored config (sebastian.config.get) and keeps the port open for 2 minutes so you can edit and send on the same connection. The WiFi password is never returned. A separate private pairing panel lets you explicitly reveal or copy the device credential read over USB.",
     "When accepting the config, the firmware responds sebastian.config.ok and restarts itself to connect.",
-    "The image must be merged at offset 0 for ESP Web Tools.",
+    "The installer uses separate bootloader, partition table and app parts. Leave Erase device unchecked to preserve WiFi, credentials and profiles.",
     "If the serial connection fails, close any open monitor/bridge/esptool and retry.",
   ];
   return (

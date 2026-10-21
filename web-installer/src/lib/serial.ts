@@ -68,8 +68,11 @@ async function readFor(
   return buffer;
 }
 
-const lastLine = (text: string) =>
-  text.split(/[\r\n]+/).filter(Boolean).slice(-1)[0] ?? "";
+const safeSerialLine = (text: string) => {
+  const line = text.split(/[\r\n]+/).filter(Boolean).slice(-1)[0] ?? "";
+  return /sebastian\.config\.(dump|v1)|password|secret|"token"/i.test(line)
+    ? "[configuration/credential output omitted]" : line;
+};
 
 async function writeLine(port: SerialPort, line: string): Promise<void> {
   const writer = port.writable!.getWriter();
@@ -146,7 +149,7 @@ export async function loadConfig(log: LogFn = () => {}): Promise<LoadResult> {
         await closeLink();
         return { status: "error", message: err[1].trim() || "error" };
       }
-      log(reply.trim() ? `· Sin dump. Última línea: "${lastLine(reply).slice(0, 70)}"` : "· Sin respuesta.");
+      log(reply.trim() ? `· Sin dump. Última línea: "${safeSerialLine(reply).slice(0, 70)}"` : "· Sin respuesta.");
     }
     await closeLink();
     return { status: "no-reply" };
@@ -174,7 +177,7 @@ export async function sendConfig(
       log("Escuchando la placa antes de escribir…");
       const sniff = await readFor(p, 1500, (b) => b.includes("waiting for wake") || b.includes("provisioning receiver"));
       if (sniff.trim()) {
-        log(`· La placa dice: "${lastLine(sniff).slice(0, 70)}"`);
+        log(`· La placa dice: "${safeSerialLine(sniff).slice(0, 70)}"`);
       } else {
         log("· ⚠ Silencio — la placa puede estar reiniciando o el puerto reseteó al abrir.");
       }
@@ -194,7 +197,7 @@ export async function sendConfig(
         log(`✗ Rechazado: ${err[1].trim() || "error"}`);
         return { status: "rejected", reason: err[1].trim() || "error" };
       }
-      log(reply.trim() ? `· Sin ok/err. Última línea: "${lastLine(reply).slice(0, 70)}"` : "· Sin respuesta.");
+      log(reply.trim() ? `· Sin ok/err. Última línea: "${safeSerialLine(reply).slice(0, 70)}"` : "· Sin respuesta.");
     }
     return { status: "no-reply" };
   } catch (error) {

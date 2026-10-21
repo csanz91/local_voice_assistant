@@ -43,7 +43,7 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 
-OTLP = "http://localhost:4318"
+OTLP = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318").rstrip("/")
 RESOURCE = Resource.create({"service.name": "sebastian-device"})
 
 reader = PeriodicExportingMetricReader(
@@ -176,6 +176,8 @@ pending_close_reason = "unknown"
 
 def handle(line: str) -> None:
     global pending_close_reason, session_converged
+    if "sebastian.config.dump " in line or "sebastian.config.v1 " in line:
+        return  # Physical USB configuration may contain WiFi/device credentials.
     if m := RE_IDF_TS.match(line):
         last["uptime_ms"] = int(m.group(1))
 
@@ -259,14 +261,14 @@ def find_port() -> str | None:
     # SEBASTIAN_SERIAL_URL permite correr el bridge dentro del devcontainer
     # contra el serial compartido del host (make serial-share):
     #   SEBASTIAN_SERIAL_URL=rfc2217://<ip-del-mac>:4000 uv run bridge.py
-    if url := os.environ.get("SEBASTIAN_SERIAL_URL"):
+    if url := os.environ.get("SEBASTIAN_SERIAL_URL") or os.environ.get("SEBASTIAN_SERIAL_PORT"):
         return url
     ports = glob.glob("/dev/cu.usbmodem*") or glob.glob("/dev/ttyACM*") or glob.glob("/dev/ttyUSB*")
     return ports[0] if ports else None
 
 def main() -> None:
     global last_line_ts, serial_attached
-    print(f"[bridge] OTLP → {OTLP} | Grafana http://localhost:3000")
+    print(f"[bridge] OTLP → {OTLP}")
     while True:
         port = find_port()
         if not port:

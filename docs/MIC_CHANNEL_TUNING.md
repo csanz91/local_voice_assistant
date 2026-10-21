@@ -27,7 +27,7 @@ Conclusions from A/B testing the two output channels of the XVF3800, done by rec
 
 ## Methodology
 
-- Pure recorder `agent/record.py` (no agent nor OpenAI → free): joins the room, subscribes to the mic track and dumps it to a mono 48 kHz WAV.
+- Development peer `tools/protocol/livekit_peer.py`: joins a disposable room and observes microphone/pre-roll ordering without recording audio.
 - Same phrase, same volume/distance in each take.
 - Analysis: RMS, peak, % clipping, SNR, noise floor, % of samples in the limiter zone. Blind listening with takes **normalized to the same peak** (to judge quality without volume bias).
 

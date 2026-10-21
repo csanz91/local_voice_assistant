@@ -14,7 +14,7 @@ pub const SAMPLE_RATE = core.SAMPLE_RATE;
 pub const SECONDS = core.SECONDS;
 pub const SAMPLE_CAPACITY = core.SAMPLE_CAPACITY;
 
-const TOPIC = "sebastian.preroll";
+const TOPIC = "lk.agent.pre-connect-audio-buffer";
 const SCTP_SEND_CACHE_BYTES: u64 = 100 * 1024;
 
 var ring: ?[*]i16 = null;
@@ -81,7 +81,7 @@ fn writeSamples(room: c.livekit_room_handle_t, stream: c.livekit_data_stream_han
     return c.livekit_room_data_stream_write(room, stream, bytes, slice.len * @sizeOf(i16)) == c.LIVEKIT_ERR_NONE;
 }
 
-pub fn send(room: c.livekit_room_handle_t, wake_id: u32, full_duplex_active: bool) bool {
+pub fn send(room: c.livekit_room_handle_t, wake_id: u32, track_sid: [*:0]const u8) bool {
     const count = windowSamples();
     if (ring == null or count == 0) {
         log.warn("no pre-roll available for wake_id={d}", .{wake_id});
@@ -89,7 +89,7 @@ pub fn send(room: c.livekit_room_handle_t, wake_id: u32, full_duplex_active: boo
     }
 
     const sample_count: u32 = @intCast(count);
-    const total_len: u64 = core.HEADER_BYTES + @as(u64, sample_count) * @sizeOf(i16);
+    const total_len: u64 = @as(u64, sample_count) * @sizeOf(i16);
     // The publisher data channel buffers sends in a 100 KB cache (peer.c
     // send_cache_size). A slow connect grows this window past it (140-198 KB
     // seen in the field) — flag it so a reboot right after the handoff can be
@@ -97,7 +97,14 @@ pub fn send(room: c.livekit_room_handle_t, wake_id: u32, full_duplex_active: boo
     if (total_len > SCTP_SEND_CACHE_BYTES) {
         log.warn("pre-roll {d} bytes exceeds the SCTP send cache ({d} bytes)", .{ total_len, SCTP_SEND_CACHE_BYTES });
     }
+    const attrs = [_]c.livekit_attribute_t{
+        .{ .key = "trackId", .value = track_sid },
+        .{ .key = "sampleRate", .value = "16000" },
+        .{ .key = "channels", .value = "1" },
+    };
     var opts = c.livekit_data_stream_options_t{
+        .attributes = &attrs,
+        .attributes_count = attrs.len,
         .topic = TOPIC,
         .is_text = false,
         .total_length = total_len,
@@ -110,8 +117,6 @@ pub fn send(room: c.livekit_room_handle_t, wake_id: u32, full_duplex_active: boo
     }
 
     var ok = true;
-    const header = core.makeHeader(wake_id, sample_count, core.makeFlags(full_duplex_active));
-    ok = ok and c.livekit_room_data_stream_write(room, stream, header[0..].ptr, header.len) == c.LIVEKIT_ERR_NONE;
 
     // Newest `count` samples end at write_idx; start may wrap.
     const start = core.startIndex(write_idx, count);
@@ -123,11 +128,10 @@ pub fn send(room: c.livekit_room_handle_t, wake_id: u32, full_duplex_active: boo
     const closed = c.livekit_room_data_stream_close(room, stream) == c.LIVEKIT_ERR_NONE;
     ok = ok and closed;
     if (ok) {
-        log.info("sent pre-roll wake_id={d} duration_ms={d} bytes={d} full_duplex={}", .{
+        log.info("sent pre-roll wake_id={d} duration_ms={d} bytes={d}", .{
             wake_id,
             availableMs(),
             total_len,
-            full_duplex_active,
         });
     } else {
         log.err("send pre-roll failed wake_id={d}", .{wake_id});

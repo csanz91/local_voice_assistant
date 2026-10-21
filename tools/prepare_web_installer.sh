@@ -1,62 +1,33 @@
 #!/usr/bin/env bash
-# Prepare the static GitHub Pages web installer from an existing firmware build.
-#
-# This does not build firmware. Run `make fw-build` first in the devcontainer.
-# The generated binary can embed local WiFi/token-server config; publish only
-# factory images that are intentionally safe to distribute.
+# Package sparse firmware parts. A merged offset-zero image overwrites the NVS
+# gap even when eraseAll is false, so the USB installer must use separate parts.
 set -euo pipefail
-
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$ROOT/firmware/build"
-OUT_DIR="$ROOT/docs/installer/firmware"
-MANIFEST="$ROOT/docs/installer/manifest.json"
-VERSION="${1:-$(git -C "$ROOT" describe --tags --always --dirty)}"
-MERGED_BIN="$OUT_DIR/sebastian-esp32s3-merged.bin"
-
-require_file() {
-    if [[ -f "$1" ]]; then
-        return
-    fi
-    echo "Missing $1. Run: make fw-build" >&2
-    exit 1
+TASK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TASK_BUILD="$TASK_ROOT/firmware/build"
+TASK_OUTPUT="$TASK_ROOT/web-installer/dist/firmware"
+TASK_VERSION="${1:-$(git -C "$TASK_ROOT" describe --tags --always --dirty)}"
+for TASK_FILE in bootloader/bootloader.bin partition_table/partition-table.bin sebastian.bin; do
+    [[ -f "$TASK_BUILD/$TASK_FILE" ]] || { echo "Missing $TASK_BUILD/$TASK_FILE; run make fw-build" >&2; exit 1; }
+done
+mkdir -p "$TASK_OUTPUT"
+cp "$TASK_BUILD/bootloader/bootloader.bin" "$TASK_OUTPUT/bootloader.bin"
+cp "$TASK_BUILD/partition_table/partition-table.bin" "$TASK_OUTPUT/partition-table.bin"
+cp "$TASK_BUILD/sebastian.bin" "$TASK_OUTPUT/sebastian.bin"
+python3 - "$TASK_VERSION" "$TASK_ROOT/web-installer/dist/manifest.json" <<'PY'
+import json, sys
+from pathlib import Path
+manifest = {
+    "name": "Sebastian", "version": sys.argv[1],
+    # esp-web-tools erases non-Improv devices automatically when this is false.
+    # With true, its erase checkbox starts unchecked and the operator chooses.
+    "new_install_prompt_erase": True, "new_install_improv_wait_time": 0,
+    "builds": [{"chipFamily": "ESP32-S3", "improv": False, "parts": [
+        {"path": "firmware/bootloader.bin", "offset": 0},
+        {"path": "firmware/partition-table.bin", "offset": 0x8000},
+        {"path": "firmware/sebastian.bin", "offset": 0x10000},
+    ]}],
 }
-
-require_file "$BUILD_DIR/bootloader/bootloader.bin"
-require_file "$BUILD_DIR/partition_table/partition-table.bin"
-require_file "$BUILD_DIR/sebastian.bin"
-
-mkdir -p "$OUT_DIR"
-
-uvx --from "esptool==4.11.0" esptool.py --chip esp32s3 merge_bin \
-    -o "$MERGED_BIN" \
-    --flash_mode dio \
-    --flash_freq 80m \
-    --flash_size 8MB \
-    0x0 "$BUILD_DIR/bootloader/bootloader.bin" \
-    0x8000 "$BUILD_DIR/partition_table/partition-table.bin" \
-    0x10000 "$BUILD_DIR/sebastian.bin"
-
-cat >"$MANIFEST" <<JSON
-{
-  "name": "Sebastian",
-  "version": "$VERSION",
-  "new_install_prompt_erase": true,
-  "new_install_improv_wait_time": 0,
-  "builds": [
-    {
-      "chipFamily": "ESP32-S3",
-      "improv": false,
-      "parts": [
-        {
-          "path": "firmware/sebastian-esp32s3-merged.bin",
-          "offset": 0
-        }
-      ]
-    }
-  ]
-}
-JSON
-
-echo "[installer] wrote $MERGED_BIN"
-echo "[installer] wrote $MANIFEST"
-echo "[installer] WARNING: generated firmware may embed local secrets; review before publishing."
+Path(sys.argv[2]).write_text(json.dumps(manifest, indent=2) + "\n")
+PY
+echo "[installer] Sparse bootloader, partition table and app packaged in $TASK_OUTPUT"
+echo "[installer] Leave Erase device unchecked to preserve NVS. Nothing published or flashed."

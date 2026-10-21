@@ -179,7 +179,13 @@ data_stream_reader_err_t data_stream_reader_handle_header(data_stream_reader_han
     slot->has_total_length = header->has_total_length;
 
     if (slot->handler.on_open != NULL) {
+        livekit_attribute_t attributes[LIVEKIT_DATA_STREAM_ATTRIBUTES_MAX];
+        for (size_t i = 0; i < header->attributes_count; i++) {
+            attributes[i] = (livekit_attribute_t){ header->attributes[i].key, header->attributes[i].value };
+        }
         livekit_data_stream_header_t info = {
+            .attributes = attributes,
+            .attributes_count = header->attributes_count,
             .stream_id = header->stream_id,
             .topic = header->topic,
             .sender_identity = sender_identity,

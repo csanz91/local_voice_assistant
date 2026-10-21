@@ -53,6 +53,9 @@ typedef struct {
     void (*on_data_packet)(livekit_pb_data_packet_t* packet, void *ctx);
     void (*on_room_info)(const livekit_pb_room_t* info, void *ctx);
     void (*on_participant_info)(const livekit_pb_participant_info_t* info, bool is_local, void *ctx);
+    void (*on_local_track_published)(const livekit_pb_track_published_response_t *info, void *ctx);
+    bool enable_preconnect_buffer;
+    bool (*audio_receive_filter)(void *ctx);
     engine_media_options_t media;
 } engine_options_t;
 

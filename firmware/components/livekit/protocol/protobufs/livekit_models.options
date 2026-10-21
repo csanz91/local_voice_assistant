@@ -13,7 +13,9 @@ livekit_pb.ParticipantInfo.version type:FT_IGNORE
 livekit_pb.ParticipantInfo.permission label_override:LABEL_REQUIRED
 livekit_pb.ParticipantInfo.region type:FT_IGNORE
 livekit_pb.ParticipantInfo.is_publisher type:FT_IGNORE
-livekit_pb.ParticipantInfo.attributes type:FT_IGNORE
+livekit_pb.ParticipantInfo.attributes type:FT_CALLBACK callback_datatype:"livekit_pb_attributes_t"
+livekit_pb.ParticipantInfo callback_function:"livekit_pb_attributes_callback"
+livekit_models.proto include:"protocol_attributes.h"
 livekit_pb.ParticipantInfo.disconnect_reason type:FT_IGNORE
 livekit_pb.ParticipantInfo.kind_details type:FT_IGNORE
 
@@ -62,7 +64,9 @@ livekit_pb.DataStream.Header.stream_id max_length:36
 livekit_pb.DataStream.Header.topic type:FT_POINTER
 livekit_pb.DataStream.Header.mime_type type:FT_IGNORE
 livekit_pb.DataStream.Header.encryption_type type:FT_IGNORE
-livekit_pb.DataStream.Header.attributes type:FT_IGNORE
+livekit_pb.DataStream.Header.attributes max_count:3
+livekit_pb.DataStream.Header.AttributesEntry.key max_length:31
+livekit_pb.DataStream.Header.AttributesEntry.value max_length:127
 
 livekit_pb.DataStream.TextHeader.operation_type type:FT_IGNORE
 livekit_pb.DataStream.TextHeader.version type:FT_IGNORE
@@ -83,12 +87,12 @@ livekit_pb.DataStream.Trailer.attributes type:FT_IGNORE
 livekit_pb.SipDTMF.digit max_length:1
 
 livekit_pb.TrackInfo.sid type:FT_POINTER
-livekit_pb.TrackInfo.name type:FT_IGNORE
+livekit_pb.TrackInfo.name max_length:63
 livekit_pb.TrackInfo.width type:FT_IGNORE
 livekit_pb.TrackInfo.height type:FT_IGNORE
 livekit_pb.TrackInfo.simulcast type:FT_IGNORE
 livekit_pb.TrackInfo.disable_dtx type:FT_IGNORE
-livekit_pb.TrackInfo.source type:FT_IGNORE
+
 livekit_pb.TrackInfo.layers type:FT_IGNORE
 livekit_pb.TrackInfo.mime_type type:FT_POINTER
 livekit_pb.TrackInfo.mid type:FT_IGNORE

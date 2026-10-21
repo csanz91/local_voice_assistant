@@ -3,21 +3,23 @@
 // The web installer flashes a factory image and then sends one line over Web
 // Serial:  "sebastian.config.v1 {json}\n". This receiver stores the WiFi creds
 // in NVS and restarts; on the next boot sebastian_net_connect() uses them. If
-// NVS has no creds it falls back to the compiled CONFIG_LK_EXAMPLE_WIFI_* — so a
-// unit built the old way (secrets baked in) keeps working with zero change, and
-// a factory image (those blanked) waits to be provisioned. See PROVISIONING.md.
+// NVS credentials are configured locally; factory images contain no secrets.
 //
 // The esp_wifi/nvs/cJSON/usb_serial_jtag APIs are far easier in C than through
 // hand-written Zig bindings, so this lives here like session_http.c.
 
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_random.h"
+#include "bootloader_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -30,20 +32,22 @@
 #include "freertos/task.h"
 
 #include "profiles.h"
-#include "sebastian_fleet.h"
+#include "session_http.h"
+#include "provisioning_config.h"
 
 static const char *TAG = "provisioning";
 
 #define NVS_NS "sebastian"
 #define PROV_PREFIX "sebastian.config.v1 "
-#define PROV_SCHEMA "sebastian.config.v1"
+#define PROV_SCHEMA SEBASTIAN_PROVISIONING_SCHEMA
 #define PROFILE_PREFIX "sebastian.profile.set "
 #define GET_CMD "sebastian.config.get"
 #define DUMP_PREFIX "sebastian.config.dump "
 // A config.get keeps the USB-serial window open this long so the installer can
 // show the stored config, let the operator edit it and send it back on the same
 // port (see app.zig: the window normally closes 5 s after boot).
-#define HOLD_AFTER_GET_US (120LL * 1000 * 1000)
+#define HOLD_AFTER_GET_MS (120U * 1000U)
+#define PROVISIONING_LINE_CAPACITY 8192
 
 #define NET_CONNECTED (1 << 0)
 #define NET_FAILED (1 << 1)
@@ -52,10 +56,14 @@ static const char *TAG = "provisioning";
 static EventGroupHandle_t net_events;
 static int retry_attempt;
 static bool usj_ready; // usb_serial_jtag driver installed (also used for replies)
-static int64_t hold_until_us;
+static atomic_uint_least32_t hold_until_ms;
+static TaskHandle_t receiver_task;
+static atomic_bool stop_requested;
+static atomic_bool receiver_stopped;
 
 bool sebastian_provisioning_hold(void) {
-    return esp_timer_get_time() < hold_until_us;
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    return (int32_t)(atomic_load_explicit(&hold_until_ms, memory_order_acquire) - now) > 0;
 }
 
 // ── Replies go out through stdout, i.e. the console — whose secondary output is
@@ -66,7 +74,8 @@ bool sebastian_provisioning_hold(void) {
 static void reply(const char *line) {
     printf("%s\n", line);
     fflush(stdout);
-    ESP_LOGI(TAG, "reply: %.*s", 32, line);
+    // Config dumps contain the device credential: never duplicate into ESP logs.
+    ESP_LOGI(TAG, "serial response sent");
 }
 
 // ── NVS ──────────────────────────────────────────────────────────────────────
@@ -161,10 +170,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     }
 }
 
-// A WiFi change pushed over the network (adoption / desired config) is a
-// trial: the previous credentials stay in NVS until the new ones obtain an IP.
-// No IP within WIFI_TRIAL_MS ⇒ restore the previous network and restart, and
-// the failure is reported on the next announce (RF-45).
+// Settle any pending WiFi trial left by older firmware without erasing NVS.
+// New local USB updates are final; no network config writer remains.
 #define WIFI_TRIAL_MS (120 * 1000)
 
 static bool wifi_trial_pending(void) {
@@ -248,7 +255,7 @@ static void store_cfg_bool(nvs_handle_t h, const char *key, const cJSON *item) {
 }
 
 // A string field that is present and empty ERASES the key (that is how "forget"
-// clears the control room and the secrets); absent keeps the stored value.
+// clears the endpoint and the credential); absent keeps the stored value.
 static void store_str_or_erase(nvs_handle_t h, const char *key, const cJSON *item) {
     if (!cJSON_IsString(item)) return;
     if (item->valuestring[0] == '\0') nvs_erase_key(h, key);
@@ -259,9 +266,7 @@ static void store_str_or_erase(nvs_handle_t h, const char *key, const cJSON *ite
 // with the unit in hand, so a WiFi change there is final (no trial/rollback).
 static bool usj_ready_for_serial_provisioning;
 
-// The WiFi block is optional: a config pushed over the network (adoption,
-// desired config) normally leaves it out and keeps the stored network. When it
-// changes the network, the previous credentials are kept for the trial rollback.
+// The WiFi block is optional: absent values retain the existing network.
 static bool store_wifi_block(nvs_handle_t h, const cJSON *wifi) {
     if (!cJSON_IsObject(wifi)) return true;
     const cJSON *ssid = cJSON_GetObjectItem(wifi, "ssid");
@@ -284,25 +289,25 @@ static bool store_wifi_block(nvs_handle_t h, const cJSON *wifi) {
     return true;
 }
 
-static bool store_config(cJSON *root) {
+bool sebastian_provisioning_store_config(cJSON *root) {
     nvs_ensure_init(); // the receiver can run before net_connect inits NVS
     nvs_handle_t h;
     esp_err_t oe = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (oe != ESP_OK) { ESP_LOGE(TAG, "store: open=%s", esp_err_to_name(oe)); return false; }
     esp_err_t se = ESP_OK;
     bool ok = store_wifi_block(h, cJSON_GetObjectItem(root, "wifi"));
-    // token server URL = the control room this unit is bound to. Empty = unbound
-    // (forget). token.zig / control.zig read it.
+    // Historical NVS key retained; its value is now the complete session URL.
     cJSON *lk = cJSON_GetObjectItem(root, "livekit");
-    if (ok && lk) store_str_or_erase(h, "token_url", cJSON_GetObjectItem(lk, "tokenServerUrl"));
-    // Adoption secrets (docs/implementation/11-fleet-adoption-control-room.md §5):
-    // the organization secret authorizes adoption, the device secret opens
-    // sessions. Empty strings clear them (forget / factory).
-    cJSON *ad = cJSON_GetObjectItem(root, "adoption");
-    if (ok && cJSON_IsObject(ad)) {
-        store_str_or_erase(h, "org_secret", cJSON_GetObjectItem(ad, "orgSecret"));
-        store_str_or_erase(h, "dev_secret", cJSON_GetObjectItem(ad, "deviceSecret"));
+    if (ok && lk) {
+        store_str_or_erase(h, "token_url", cJSON_GetObjectItem(lk, "tokenServerUrl"));
+        store_cfg_bool(h, "insecure_http", cJSON_GetObjectItem(lk, "allowInsecureHttp"));
     }
+    cJSON *device = cJSON_GetObjectItem(root, "device");
+    // Import old USB provisioning files without retaining any organization authority.
+    cJSON *legacy = cJSON_GetObjectItem(root, "adoption");
+    const cJSON *secret = cJSON_IsObject(device) ? cJSON_GetObjectItem(device, "secret") :
+        cJSON_GetObjectItem(legacy, "deviceSecret");
+    if (ok) store_str_or_erase(h, "dev_secret", secret);
     // Session timing (session_core / session_reducer read these through config.zig).
     cJSON *sess = cJSON_GetObjectItem(root, "session");
     if (ok && cJSON_IsObject(sess)) {
@@ -311,9 +316,6 @@ static bool store_config(cJSON *root) {
         cJSON *vl = cJSON_GetObjectItem(sess, "voiceLevel");
         if (cJSON_IsNumber(vl) && vl->valueint > 0) nvs_set_i32(h, "voice_lvl", (int32_t)vl->valueint);
     }
-    // The control room's desired-config version this payload carries; echoed in
-    // every reconciliation poll so the dashboard can show running vs desired.
-    if (ok) store_str_or_erase(h, "cfg_ver", cJSON_GetObjectItem(root, "configVersion"));
     // Optional telemetry: UDP syslog receiver for the device's logs (the firmware
     // ships ESP_LOG here since nothing reads its serial in prod). syslog_sink.c
     // reads these at boot; absent ⇒ the sink stays off.
@@ -345,9 +347,9 @@ static bool store_config(cJSON *root) {
     if (ok && cJSON_IsArray(profs)) {
         char *s = cJSON_PrintUnformatted(profs);
         if (s) {
-            nvs_set_str(h, "profiles", s);
+            ok = strlen(s) < SEBASTIAN_PROFILES_JSON_CAPACITY && nvs_set_str(h, "profiles", s) == ESP_OK;
             cJSON_free(s);
-        }
+        } else ok = false;
     }
     cJSON *ap = cJSON_GetObjectItem(root, "activeProfile");
     if (ok && cJSON_IsString(ap)) nvs_set_str(h, "active_prof", ap->valuestring);
@@ -358,97 +360,12 @@ static bool store_config(cJSON *root) {
     return ok;
 }
 
-// Parse + schema-check + store a sebastian.config.v1 document. Shared by the
-// serial receiver, the LAN adoption listener (adopt.c) and the desired-config
-// poll (control.zig). Never restarts: the caller decides when.
-bool sebastian_provisioning_apply(const char *json, char *err, size_t err_size) {
-    cJSON *root = cJSON_Parse(json);
-    if (!root) { snprintf(err, err_size, "json_parse"); return false; }
-    cJSON *schema = cJSON_GetObjectItem(root, "schema");
-    if (!cJSON_IsString(schema) || strcmp(schema->valuestring, PROV_SCHEMA) != 0) {
-        cJSON_Delete(root);
-        snprintf(err, err_size, "schema");
-        return false;
-    }
-    bool ok = store_config(root);
-    cJSON_Delete(root);
-    if (!ok) snprintf(err, err_size, "wifi");
-    return ok;
-}
-
 bool sebastian_get_device_secret(char *out, size_t out_size) { return nvs_read_str("dev_secret", out, out_size); }
 
-static bool nvs_write_str(const char *key, const char *value) {
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return false;
-    esp_err_t e = value[0] ? nvs_set_str(h, key, value) : nvs_erase_key(h, key);
-    if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
-    if (e == ESP_OK) e = nvs_commit(h);
-    nvs_close(h);
-    return e == ESP_OK;
-}
-
-// The device secret is born with the unit (RF-51): generated once, at the
-// first boot that needs it, and kept across adoptions. Only "forget" (factory)
-// erases it, and a regeneration from the ficha replaces it.
+// Platform voice credentials are owner-provisioned finite JWTs. Boot remains
+// available without one (USB/setup); random local strings cannot authenticate.
 bool sebastian_ensure_device_secret(void) {
     nvs_ensure_init();
-    char cur[129];
-    if (nvs_read_str("dev_secret", cur, sizeof(cur))) return true;
-    uint8_t raw[32];
-    esp_fill_random(raw, sizeof(raw));
-    char hex[65];
-    static const char digits[] = "0123456789abcdef";
-    for (int i = 0; i < 32; i++) { hex[i * 2] = digits[raw[i] >> 4]; hex[i * 2 + 1] = digits[raw[i] & 0xF]; }
-    hex[64] = '\0';
-    if (!nvs_write_str("dev_secret", hex)) return false;
-    ESP_LOGI(TAG, "device secret generated");
-    return true;
-}
-
-// Which control room already holds our secret: the origin of the token URL
-// at the time of the last adoption/enrolment. A different token URL (USB
-// re-provisioning) or a 401 from the control room clears it, so the unit
-// enrols again (control.zig).
-static void token_origin(char *out, size_t out_size) {
-    char url[256] = {0};
-    out[0] = '\0';
-    if (!nvs_read_str("token_url", url, sizeof(url))) return;
-    const char *p = strstr(url, "://");
-    p = p ? strchr(p + 3, '/') : strchr(url, '/');
-    size_t n = p ? (size_t)(p - url) : strlen(url);
-    if (n >= out_size) n = out_size - 1;
-    memcpy(out, url, n);
-    out[n] = '\0';
-}
-
-void sebastian_mark_bound(void) {
-    char origin[256];
-    token_origin(origin, sizeof(origin));
-    nvs_write_str("cr_bound", origin);
-}
-
-void sebastian_clear_bound(void) { nvs_write_str("cr_bound", ""); }
-
-bool sebastian_is_bound(void) {
-    char origin[256], bound[256];
-    token_origin(origin, sizeof(origin));
-    if (!origin[0] || !nvs_read_str("cr_bound", bound, sizeof(bound))) return false;
-    return strcmp(origin, bound) == 0;
-}
-bool sebastian_get_org_secret(char *out, size_t out_size) { return nvs_read_str("org_secret", out, out_size); }
-bool sebastian_get_cfg_version(char *out, size_t out_size) { return nvs_read_str("cfg_ver", out, out_size); }
-
-// One-shot: the error recorded by a previous boot (wifi-rollback…) is announced
-// once and cleared.
-bool sebastian_take_last_error(char *out, size_t out_size) {
-    if (!nvs_read_str("last_err", out, out_size)) return false;
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_erase_key(h, "last_err");
-        nvs_commit(h);
-        nvs_close(h);
-    }
     return true;
 }
 
@@ -490,10 +407,8 @@ static void dump_i32(nvs_handle_t h, cJSON *obj, const char *json_key, const cha
     if (nvs_get_i32(h, nvs_key, &v) == ESP_OK) cJSON_AddNumberToObject(obj, json_key, v);
 }
 
-// The stored config as a sebastian.config.v1 document. in_hand: the reader has
-// the unit on a USB cable, so its own secret may go out; over the network
-// (RF-42 report) no secret ever does.
-static cJSON *config_dump(bool in_hand) {
+// Physical USB readback only; includes the credential for operator pairing.
+static cJSON *config_dump(void) {
     nvs_ensure_init();
     nvs_handle_t h;
     esp_err_t oe = nvs_open(NVS_NS, NVS_READONLY, &h);
@@ -504,6 +419,13 @@ static cJSON *config_dump(bool in_hand) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "schema", PROV_SCHEMA);
     cJSON_AddBoolToObject(root, "provisioned", false);
+    cJSON *device = cJSON_AddObjectToObject(root, "device");
+    uint8_t mac[6];
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        char id[13];
+        snprintf(id, sizeof(id), "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        cJSON_AddStringToObject(device, "id", id);
+    }
     if (oe == ESP_OK) {
         cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
         dump_str(h, wifi, "ssid", "wifi_ssid");
@@ -515,6 +437,7 @@ static cJSON *config_dump(bool in_hand) {
 
         cJSON *lk = cJSON_AddObjectToObject(root, "livekit");
         dump_str(h, lk, "tokenServerUrl", "token_url");
+        dump_bool(h, lk, "allowInsecureHttp", "insecure_http");
 
         cJSON *tel = cJSON_AddObjectToObject(root, "telemetry");
         dump_str(h, tel, "syslogIp", "syslog_ip");
@@ -526,7 +449,7 @@ static cJSON *config_dump(bool in_hand) {
         dump_bool(h, audio, "fixedBeam", "fixed_beam");
         dump_i32(h, audio, "fixedBeamAzimuthDeg", "beam_az");
 
-        // Heap, not stack: the RF-42 report runs this from the 4 KB poll task.
+        // Keep profile JSON on the heap to bound provisioning task stack use.
         size_t len = 0;
         if (nvs_get_str(h, "profiles", NULL, &len) == ESP_OK && len > 0) {
             char *profs = malloc(len);
@@ -538,38 +461,25 @@ static cJSON *config_dump(bool in_hand) {
         }
         dump_str(h, root, "activeProfile", "active_prof");
 
-        cJSON *ad = cJSON_AddObjectToObject(root, "adoption");
-        char sec[129];
+        cJSON *ad = device;
+        char sec[1025];
         size_t slen = sizeof(sec);
-        cJSON_AddBoolToObject(ad, "orgSecretSet", nvs_get_str(h, "org_secret", sec, &slen) == ESP_OK && slen > 1);
-        slen = sizeof(sec);
         // The unit is in hand (USB): its own secret is readable here, so an
         // operator who lost it does not have to regenerate.
         const bool has_dev = nvs_get_str(h, "dev_secret", sec, &slen) == ESP_OK && slen > 1;
-        if (has_dev && in_hand) cJSON_AddStringToObject(ad, "deviceSecret", sec);
-        cJSON_AddBoolToObject(ad, "deviceSecretSet", has_dev);
+        if (has_dev) cJSON_AddStringToObject(ad, "secret", sec);
+        cJSON_AddBoolToObject(ad, "secretSet", has_dev);
         cJSON *sess = cJSON_AddObjectToObject(root, "session");
         dump_i32(h, sess, "silenceTimeoutMs", "silence_ms");
         dump_i32(h, sess, "voiceLevel", "voice_lvl");
-        dump_str(h, root, "configVersion", "cfg_ver");
         nvs_close(h);
     }
     return root;
 }
 
-char *sebastian_config_dump_json(void) {
-    cJSON *root = config_dump(false);
-    if (!root) return NULL;
-    char *s = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    return s;
-}
-
-void sebastian_config_dump_free(char *s) { cJSON_free(s); }
-
 static void handle_config_get(void) {
-    hold_until_us = esp_timer_get_time() + HOLD_AFTER_GET_US;
-    cJSON *root = config_dump(true);
+    atomic_store_explicit(&hold_until_ms, (uint32_t)(esp_timer_get_time() / 1000) + HOLD_AFTER_GET_MS, memory_order_release);
+    cJSON *root = config_dump();
     if (!root) { reply("sebastian.config.err nvs_open"); return; }
     char *s = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -614,33 +524,74 @@ static void handle_line(const char *line) {
 }
 
 static void provisioning_task(void *arg) {
-    (void)arg;
-    static char line[1024];
+    char *line = arg; // bounded PSRAM storage; never consumes internal static RAM
     size_t pos = 0;
-    for (;;) {
+    bool dropping = false;
+    while (!atomic_load_explicit(&stop_requested, memory_order_acquire) || sebastian_provisioning_hold()) {
         uint8_t byte;
         if (usb_serial_jtag_read_bytes(&byte, 1, pdMS_TO_TICKS(200)) != 1) continue;
         if (byte == '\n' || byte == '\r') {
             line[pos] = '\0';
-            if (pos > 0) handle_line(line);
+            if (!dropping && pos > 0) handle_line(line);
             pos = 0;
-        } else if (pos < sizeof(line) - 1) {
+            dropping = false;
+        } else if (!dropping && pos < PROVISIONING_LINE_CAPACITY - 1) {
             line[pos++] = (char)byte;
         } else {
-            pos = 0; // overlong line — drop it
+            dropping = true; // discard the entire overlong command until newline
         }
     }
+    heap_caps_free(line);
+    // No more driver calls after this acknowledgement. The boot task can now
+    // delete us safely, reclaim our stack immediately and uninstall the driver.
+    atomic_store_explicit(&receiver_stopped, true, memory_order_release);
+    for (;;) vTaskSuspend(NULL);
 }
 
-// Install the USB-Serial-JTAG driver and spawn the receiver. Idempotent.
+// Boot-window only. Keep the full RX capacity transient to avoid depending on
+// unmeasured serial-consumer throughput while board/XVF initialization runs.
 void sebastian_provisioning_start(void) {
-    if (!usj_ready) {
-        usb_serial_jtag_driver_config_t cfg = {
-            .tx_buffer_size = 256,
-            .rx_buffer_size = 1024,
-        };
-        if (usb_serial_jtag_driver_install(&cfg) == ESP_OK) usj_ready = true;
+    if (receiver_task) return;
+    char *line = heap_caps_malloc(PROVISIONING_LINE_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!line) { ESP_LOGE(TAG, "no PSRAM for serial provisioning"); return; }
+    usb_serial_jtag_driver_config_t cfg = {
+        .tx_buffer_size = 256,
+        .rx_buffer_size = PROVISIONING_LINE_CAPACITY,
+    };
+    if (usb_serial_jtag_driver_install(&cfg) != ESP_OK) {
+        heap_caps_free(line);
+        ESP_LOGE(TAG, "serial provisioning driver install failed");
+        return;
     }
-    xTaskCreate(provisioning_task, "provisioning", 4096, NULL, 5, NULL);
+    usj_ready = true;
+    atomic_store_explicit(&stop_requested, false, memory_order_release);
+    atomic_store_explicit(&receiver_stopped, false, memory_order_release);
+    if (xTaskCreate(provisioning_task, "provisioning", 4096, line, 5, &receiver_task) != pdPASS) {
+        heap_caps_free(line);
+        usb_serial_jtag_driver_uninstall();
+        usj_ready = false;
+        receiver_task = NULL;
+        ESP_LOGE(TAG, "serial provisioning task creation failed");
+        return;
+    }
     ESP_LOGI(TAG, "provisioning receiver ready (send %s{json})", PROV_PREFIX);
+}
+
+// Called on the common boot path immediately before TinyUSB takes the PHY.
+// A config.get raced with window expiry is honored by the receiver's hold check.
+void sebastian_provisioning_stop(void) {
+    if (receiver_task) {
+        atomic_store_explicit(&stop_requested, true, memory_order_release);
+        while (!atomic_load_explicit(&receiver_stopped, memory_order_acquire)) vTaskDelay(pdMS_TO_TICKS(10));
+        // Wait until it has actually suspended on either core, so deletion can
+        // reclaim its stack now rather than deferring reclamation to the idle task.
+        while (eTaskGetState(receiver_task) != eSuspended) vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelete(receiver_task);
+        receiver_task = NULL;
+    }
+    if (usj_ready) {
+        ESP_ERROR_CHECK(usb_serial_jtag_driver_uninstall());
+        usj_ready = false;
+    }
+    ESP_LOGI(TAG, "provisioning receiver stopped; USB buffers and task released");
 }

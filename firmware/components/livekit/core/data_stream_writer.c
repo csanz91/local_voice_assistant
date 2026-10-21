@@ -60,6 +60,11 @@ static data_stream_writer_err_t send_header(data_stream_writer_t *w, data_stream
     pb_header.topic = (char *)options->topic;
     pb_header.has_total_length = options->has_total_length;
     pb_header.total_length = options->total_length;
+    pb_header.attributes_count = (pb_size_t)options->attributes_count;
+    for (size_t i = 0; i < options->attributes_count; i++) {
+        strcpy(pb_header.attributes[i].key, options->attributes[i].key);
+        strcpy(pb_header.attributes[i].value, options->attributes[i].value);
+    }
 
     if (options->is_text) {
         pb_header.which_content_header = LIVEKIT_PB_DATA_STREAM_HEADER_TEXT_HEADER_TAG;
@@ -152,6 +157,18 @@ data_stream_writer_err_t data_stream_writer_open(data_stream_writer_handle_t han
 {
     if (handle == NULL || options == NULL || options->topic == NULL || stream == NULL) {
         return DATA_STREAM_WRITER_ERR_INVALID_ARG;
+    }
+    if (options->attributes_count > LIVEKIT_DATA_STREAM_ATTRIBUTES_MAX ||
+        (options->attributes_count && !options->attributes)) return DATA_STREAM_WRITER_ERR_INVALID_ARG;
+    for (size_t i = 0; i < options->attributes_count; i++) {
+        const livekit_attribute_t *a = &options->attributes[i];
+        if (!a->key || !a->value || !a->key[0] ||
+            strnlen(a->key, LIVEKIT_DATA_STREAM_ATTRIBUTE_KEY_MAX + 1) > LIVEKIT_DATA_STREAM_ATTRIBUTE_KEY_MAX ||
+            strnlen(a->value, LIVEKIT_DATA_STREAM_ATTRIBUTE_VALUE_MAX + 1) > LIVEKIT_DATA_STREAM_ATTRIBUTE_VALUE_MAX)
+            return DATA_STREAM_WRITER_ERR_INVALID_ARG;
+        for (size_t j = 0; j < i; j++) {
+            if (!strcmp(a->key, options->attributes[j].key)) return DATA_STREAM_WRITER_ERR_INVALID_ARG;
+        }
     }
     data_stream_writer_t *w = (data_stream_writer_t *)handle;
 

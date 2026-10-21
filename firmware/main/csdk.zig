@@ -278,6 +278,17 @@ pub const livekit_sub_options_t = extern struct {
     kind: c_int,
     renderer: av_render_handle_t,
 };
+pub const livekit_attribute_t = extern struct {
+    key: [*:0]const u8,
+    value: [*:0]const u8,
+};
+pub const livekit_track_info_t = extern struct {
+    sid: ?[*:0]const u8,
+    name: ?[*:0]const u8,
+    type: c_int,
+    source: c_int,
+    muted: bool,
+};
 pub const livekit_participant_info_t = extern struct {
     sid: ?[*:0]const u8,
     identity: ?[*:0]const u8,
@@ -285,12 +296,19 @@ pub const livekit_participant_info_t = extern struct {
     metadata: ?[*:0]const u8,
     kind: c_int,
     state: c_int,
+    attributes: ?[*]const livekit_attribute_t = null,
+    attributes_count: usize = 0,
+    tracks: ?[*]const livekit_track_info_t = null,
+    tracks_count: usize = 0,
+    info_truncated: bool = false,
 };
 pub const livekit_data_stream_options_t = extern struct {
     topic: [*:0]const u8,
     is_text: bool = false,
     total_length: u64 = 0,
     has_total_length: bool = false,
+    attributes: ?[*]const livekit_attribute_t = null,
+    attributes_count: usize = 0,
 };
 pub const livekit_data_payload_t = extern struct {
     bytes: ?[*]u8,
@@ -310,6 +328,9 @@ pub const livekit_room_options_t = extern struct {
     on_room_info: ?*const anyopaque = null,
     on_participant_info: ?*const fn (*const livekit_participant_info_t, ?*anyopaque) callconv(.c) void = null,
     ctx: ?*anyopaque = null,
+    on_local_track_published: ?*const fn ([*:0]const u8, *const livekit_track_info_t, ?*anyopaque) callconv(.c) void = null,
+    enable_preconnect_buffer: bool = false,
+    audio_receive_filter: ?*const fn (?*anyopaque) callconv(.c) bool = null,
 };
 
 pub const livekit_data_publish_options_t = extern struct {
@@ -352,43 +373,18 @@ pub extern fn heap_caps_check_integrity_all(print_errors: bool) bool;
 // --- WiFi (example_utils) + SNTP ---------------------------------------------
 pub extern fn lk_example_network_connect() bool;
 // NVS-backed WiFi + serial provisioning (main/provisioning.c). net_connect uses
-// provisioned creds, falling back to the compiled default.
+// provisioned credentials only.
 pub extern fn sebastian_net_connect() bool;
 pub extern fn sebastian_provisioning_start() void;
+/// Cooperatively stop receiver and release its buffers/driver before TinyUSB.
+pub extern fn sebastian_provisioning_stop() void;
 /// True while a `sebastian.config.get` keeps the USB-serial window open (120 s).
 pub extern fn sebastian_provisioning_hold() bool;
 
-// Fleet provisioning + adoption (main/sebastian_fleet.h).
-pub extern fn sebastian_provisioning_apply(json: [*:0]const u8, err: [*]u8, err_size: usize) bool;
+// Local provisioning and authenticated conversation sessions.
 pub extern fn sebastian_get_device_secret(out: [*]u8, size: usize) bool;
-pub extern fn sebastian_get_org_secret(out: [*]u8, size: usize) bool;
-pub extern fn sebastian_enroll(base_url: [*:0]const u8, device_id: [*:0]const u8, org_secret: [*:0]const u8, device_secret: [*:0]const u8) c_int;
 pub extern fn sebastian_ensure_device_secret() bool;
-pub extern fn sebastian_report_running_config(base_url: [*:0]const u8, device_id: [*:0]const u8, secret: [*:0]const u8) c_int;
-pub extern fn sebastian_mark_bound() void;
-pub extern fn sebastian_clear_bound() void;
-pub extern fn sebastian_is_bound() bool;
-pub extern fn sebastian_get_cfg_version(out: [*]u8, size: usize) bool;
-pub extern fn sebastian_session_create(base_url: [*:0]const u8, device_id: [*:0]const u8, secret: [*:0]const u8, json_body: ?[*:0]const u8, url_out: [*]u8, url_size: usize, token_out: [*]u8, token_size: usize) c_int;
-pub extern fn sebastian_request_meeting(base_url: [*:0]const u8, device_id: [*:0]const u8, secret: [*:0]const u8, id_out: [*]u8, id_size: usize) c_int;
-pub extern fn sebastian_report_meeting(base_url: [*:0]const u8, device_id: [*:0]const u8, secret: [*:0]const u8, meeting_id: [*:0]const u8, state: [*:0]const u8, reason: [*:0]const u8) c_int;
-pub extern fn sebastian_http_get_auth(url: [*:0]const u8, device_id: ?[*:0]const u8, secret: ?[*:0]const u8, capture_header: ?[*:0]const u8, hdr_out: ?[*]u8, hdr_size: usize, out: [*]u8, out_size: usize, status: ?*c_int) c_int;
-pub extern fn sebastian_http_get_auth2(url: [*:0]const u8, device_id: ?[*:0]const u8, secret: ?[*:0]const u8, header1: ?[*:0]const u8, hdr1_out: ?[*]u8, hdr1_size: usize, header2: ?[*:0]const u8, hdr2_out: ?[*]u8, hdr2_size: usize, out: [*]u8, out_size: usize, status: ?*c_int) c_int;
-pub extern fn sebastian_meeting_push(cmd: [*:0]const u8, id: [*:0]const u8, origin: u8) void;
-pub extern fn sebastian_meeting_take(cmd: [*]u8, cmd_size: usize, id: [*]u8, id_size: usize, origin: ?*u8) bool;
-pub extern fn sebastian_meeting_set_active(active: bool) void;
-pub extern fn sebastian_meeting_is_active() bool;
-pub extern fn sebastian_meeting_set_recordable(recordable: bool) void;
-pub extern fn sebastian_meeting_is_recordable() bool;
-pub extern fn sebastian_announce_start(id: [*:0]const u8, prof: [*:0]const u8, cr: [*:0]const u8) void;
-pub extern fn sebastian_announce_set(key: [*:0]const u8, value: [*:0]const u8) void;
-pub extern fn sebastian_announce_event(event: [*:0]const u8) void;
-pub extern fn sebastian_announce_last_event() [*:0]const u8;
-pub extern fn sebastian_adopt_accepted() bool;
-pub extern fn sebastian_adopt_start() void;
-pub extern fn sebastian_adopt_session_active(active: bool) void;
-pub extern fn sebastian_adopt_consent_pending() bool;
-pub extern fn sebastian_adopt_consent_grant() void;
+pub extern fn sebastian_session_create(endpoint: [*:0]const u8, device_id: [*:0]const u8, secret: [*:0]const u8, url_out: [*]u8, url_size: usize, token_out: [*]u8, token_size: usize, room_out: [*]u8, room_size: usize) c_int;
 // Mirror ESP_LOG to a remote UDP syslog server (config in NVS). Call after the
 // network is up; no-op if syslog_ip is unprovisioned. See syslog_sink.c.
 pub extern fn sebastian_syslog_start() void;
@@ -426,11 +422,11 @@ pub extern fn esp_capture_new_audio_dev_src(cfg: *esp_capture_audio_dev_src_cfg_
 
 // --- WiFi power save (off, for real-time audio stability) --------------------
 pub const WIFI_PS_NONE: c_int = 0;
-// usb_mic mode: audio rides USB, WiFi is telemetry/control only — modem sleep on.
+// usb_mic mode: audio rides USB, WiFi is optional telemetry only — modem sleep on.
 pub const WIFI_PS_MIN_MODEM: c_int = 1;
 pub extern fn esp_wifi_set_ps(ps_type: c_int) esp_err_t;
 
-// --- Device identity (control-plane device id) --------------------------------
+// --- Device identity (hardware MAC) --------------------------------
 pub const ESP_MAC_WIFI_STA: c_int = 0;
 pub extern fn esp_read_mac(mac: [*]u8, mac_type: c_int) esp_err_t;
 
@@ -650,7 +646,26 @@ comptime {
     std.debug.assert(@sizeOf(livekit_sub_options_t) == 8);
     std.debug.assert(@offsetOf(livekit_sub_options_t, "kind") == 0);
     std.debug.assert(@offsetOf(livekit_sub_options_t, "renderer") == 4);
-    std.debug.assert(@sizeOf(livekit_participant_info_t) == 24);
+    std.debug.assert(@sizeOf(livekit_attribute_t) == 8);
+    std.debug.assert(@offsetOf(livekit_attribute_t, "key") == 0);
+    std.debug.assert(@offsetOf(livekit_attribute_t, "value") == 4);
+    std.debug.assert(@sizeOf(livekit_track_info_t) == 20);
+    std.debug.assert(@offsetOf(livekit_track_info_t, "sid") == 0);
+    std.debug.assert(@offsetOf(livekit_track_info_t, "name") == 4);
+    std.debug.assert(@offsetOf(livekit_track_info_t, "type") == 8);
+    std.debug.assert(@offsetOf(livekit_track_info_t, "source") == 12);
+    std.debug.assert(@offsetOf(livekit_track_info_t, "muted") == 16);
+    std.debug.assert(@offsetOf(livekit_participant_info_t, "attributes") == 24);
+    std.debug.assert(@offsetOf(livekit_participant_info_t, "attributes_count") == 28);
+    std.debug.assert(@offsetOf(livekit_participant_info_t, "tracks") == 32);
+    std.debug.assert(@offsetOf(livekit_participant_info_t, "tracks_count") == 36);
+    std.debug.assert(@offsetOf(livekit_participant_info_t, "info_truncated") == 40);
+    std.debug.assert(@offsetOf(livekit_data_stream_options_t, "attributes") == 20);
+    std.debug.assert(@offsetOf(livekit_data_stream_options_t, "attributes_count") == 24);
+    std.debug.assert(@offsetOf(livekit_room_options_t, "on_local_track_published") == 68);
+    std.debug.assert(@offsetOf(livekit_room_options_t, "enable_preconnect_buffer") == 72);
+    std.debug.assert(@offsetOf(livekit_room_options_t, "audio_receive_filter") == 76);
+    std.debug.assert(@sizeOf(livekit_participant_info_t) == 44);
     std.debug.assert(@offsetOf(livekit_participant_info_t, "sid") == 0);
     std.debug.assert(@offsetOf(livekit_participant_info_t, "identity") == 4);
     std.debug.assert(@offsetOf(livekit_participant_info_t, "name") == 8);
@@ -658,7 +673,7 @@ comptime {
     std.debug.assert(@offsetOf(livekit_participant_info_t, "kind") == 16);
     std.debug.assert(@offsetOf(livekit_participant_info_t, "state") == 20);
     // total_length also pins the 8-byte alignment of u64 on Xtensa.
-    std.debug.assert(@sizeOf(livekit_data_stream_options_t) == 24);
+    std.debug.assert(@sizeOf(livekit_data_stream_options_t) == 32);
     std.debug.assert(@offsetOf(livekit_data_stream_options_t, "topic") == 0);
     std.debug.assert(@offsetOf(livekit_data_stream_options_t, "is_text") == 4);
     std.debug.assert(@offsetOf(livekit_data_stream_options_t, "total_length") == 8);
@@ -670,7 +685,7 @@ comptime {
     std.debug.assert(@offsetOf(livekit_data_received_t, "payload") == 0);
     std.debug.assert(@offsetOf(livekit_data_received_t, "topic") == 8);
     std.debug.assert(@offsetOf(livekit_data_received_t, "sender_identity") == 12);
-    std.debug.assert(@sizeOf(livekit_room_options_t) == 68);
+    std.debug.assert(@sizeOf(livekit_room_options_t) == 80);
     std.debug.assert(@offsetOf(livekit_room_options_t, "publish") == 0);
     std.debug.assert(@offsetOf(livekit_room_options_t, "subscribe") == 36);
     std.debug.assert(@offsetOf(livekit_room_options_t, "on_state_changed") == 44);

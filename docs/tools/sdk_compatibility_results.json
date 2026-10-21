@@ -1,0 +1,424 @@
+{
+  "cases": [
+    {
+      "assertions": {
+        "feature_advertised": true,
+        "native_input_received_preroll": true,
+        "preroll_precedes_live_audio": true,
+        "remote_client_observed_listening_state": true,
+        "resampled_preroll_duration_approximately_200ms": true
+      },
+      "evidence": {
+        "agent_attr": {
+          "lk.agent.state": "listening"
+        },
+        "attr_events": [
+          [
+            0.2646463330020197,
+            "agent",
+            {
+              "lk.agent.state": "listening"
+            },
+            {
+              "lk.agent.state": "listening"
+            }
+          ]
+        ],
+        "capture_count": 24,
+        "features": [
+          "TF_PRECONNECT_BUFFER"
+        ],
+        "live_tone_frame_count": 8,
+        "local_states": [
+          [
+            0.2605034160078503,
+            "initializing",
+            "listening"
+          ]
+        ],
+        "pre_bytes": 6400,
+        "preroll_segments": [
+          {
+            "dominant_hz": 442,
+            "duration_s": 0.0657,
+            "sample_count": 1576,
+            "sample_rate": 24000
+          },
+          {
+            "dominant_hz": 437,
+            "duration_s": 0.0985,
+            "sample_count": 2364,
+            "sample_rate": 24000
+          },
+          {
+            "dominant_hz": 447,
+            "duration_s": 0.0358,
+            "sample_count": 860,
+            "sample_rate": 24000
+          }
+        ]
+      },
+      "id": "standard_native_preroll",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "duplicate_same_sid_not_reinjected": true,
+        "live_audio_reached_roomio": true,
+        "old_buffer_expired": true,
+        "young_buffer_accepted": true
+      },
+      "evidence": {
+        "age_delay_s": 0.2,
+        "live_tone_frames": 17,
+        "pre_bytes": 6400,
+        "pre_tone_frames": 3,
+        "repeat_pre_tone_frames": 0
+      },
+      "id": "preconnect_attachment_age_200ms",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "duplicate_same_sid_not_reinjected": true,
+        "live_audio_reached_roomio": true,
+        "old_buffer_expired": true,
+        "young_buffer_accepted": true
+      },
+      "evidence": {
+        "age_delay_s": 1.2,
+        "live_tone_frames": 14,
+        "pre_bytes": 6400,
+        "pre_tone_frames": 0,
+        "repeat_pre_tone_frames": 0
+      },
+      "id": "preconnect_attachment_age_1200ms",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "live_audio_recovered_after_native_timeout": true,
+        "pre_was_sent_before_session_start": true,
+        "preroll_not_replayed_after_registration": true
+      },
+      "evidence": {
+        "live_tone_frames": 79,
+        "local_states": [
+          [
+            0.49631812499137595,
+            "initializing",
+            "listening"
+          ]
+        ],
+        "pre_bytes": 6400,
+        "pre_tone_frames": 0,
+        "registration_lag_s": 0.009,
+        "sent_before_session_start_s": 0.488,
+        "session_started_and_handler_registered_s": 0.496
+      },
+      "id": "preconnect_sent_before_roomio_registration",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "late_preroll_not_injected": true,
+        "live_input_continued": true,
+        "native_wait_expired_before_slow_model_update": true
+      },
+      "evidence": {
+        "configured_timeout_s": 3.0,
+        "fake_realtime_update_finished_at_s": 10.306949708028696,
+        "fake_realtime_update_started_at_s": 6.055277250008658,
+        "realtime_live_tone_frames": 11,
+        "realtime_pre_tone_frames": 0,
+        "roomio_wait": [
+          {
+            "started_at_s": 6.0554,
+            "timed_out_at_s": 9.056,
+            "track_id_seen": true
+          }
+        ],
+        "state_attr_listening_at_s": 10.312
+      },
+      "id": "realtime_startup_timeout_3s",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "live_input_continued": true,
+        "native_handler_accepted_buffer": true,
+        "output_track_before_listening": true,
+        "payload_within_200ms_probe_cap": true,
+        "preroll_reached_realtime_session": true
+      },
+      "evidence": {
+        "fake_realtime_update_finished_at_s": 15.76383229100611,
+        "fake_realtime_update_started_at_s": 11.513204624992795,
+        "listening_at_s": 15.764,
+        "native_wait": [
+          {
+            "frames_returned": 2,
+            "returned_at_s": 11.5325,
+            "started_at_s": 11.5132
+          }
+        ],
+        "output_track_trigger_at_s": 11.524,
+        "pre_bytes": 6400,
+        "pre_payload_ms": 200,
+        "pre_send_at_s": 11.532,
+        "realtime_live_tone_frames": 12,
+        "realtime_pre_tone_frames": 3
+      },
+      "id": "preroll_sent_on_standard_roomio_output_track",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "live_input_continued": true,
+        "native_wait_returned_buffered_frames": true,
+        "preroll_reached_realtime_session": true
+      },
+      "evidence": {
+        "configured_timeout_s": 6.0,
+        "fake_realtime_update_finished_at_s": 21.163975208008196,
+        "fake_realtime_update_started_at_s": 16.91392854100559,
+        "realtime_live_tone_frames": 12,
+        "realtime_pre_tone_frames": 3,
+        "roomio_wait": [
+          {
+            "frames_returned": 2,
+            "returned_at_s": 21.1795,
+            "started_at_s": 16.914,
+            "track_id_seen": true
+          }
+        ],
+        "state_attr_listening_at_s": 21.168
+      },
+      "id": "realtime_startup_timeout_6s",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "feature_advertised": true,
+        "live_input_continued": true,
+        "preroll_reached_realtime_session": true
+      },
+      "evidence": {
+        "fake_realtime_update_finished_at_s": 26.393924541014712,
+        "fake_realtime_update_started_at_s": 22.142172374995425,
+        "features": [
+          "TF_PRECONNECT_BUFFER"
+        ],
+        "listening_at_s": 26.406,
+        "pre_bytes": 6400,
+        "pre_payload_ms": 200,
+        "realtime_live_tone_frames": 12,
+        "realtime_pre_tone_frames": 3
+      },
+      "id": "mic_published_after_real_listening_state",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "live_input_continued": true,
+        "malformed_preroll_not_forwarded": true,
+        "required_metadata_omitted": true
+      },
+      "evidence": {
+        "live_tone_frames": 13,
+        "pre_bytes": 6400,
+        "pre_tone_frames": 0,
+        "required_attributes_omitted": true
+      },
+      "id": "missing_preconnect_metadata_falls_back_to_live_audio",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "agent_state_returned_to_listening": true,
+        "allowed_speech_generator_cancelled": true,
+        "in_flight_audio_tail_measured": true,
+        "linked_device_identity": true,
+        "native_queue_remained_nonempty_after_unauthorized": true,
+        "native_roomio_queue_cleared_before_ack": true,
+        "native_roomio_queue_was_nonempty": true,
+        "renderer_flushed_and_acknowledged": true,
+        "server_ack_received": true,
+        "unauthorized_sender_ignored": true
+      },
+      "evidence": {
+        "agent_received_renderer_ack": true,
+        "device_observed_state_attributes": [
+          [
+            28.615274625015445,
+            "agent",
+            {
+              "lk.agent.state": "listening"
+            },
+            {
+              "lk.agent.state": "listening"
+            }
+          ],
+          [
+            31.581019625009503,
+            "agent",
+            {
+              "lk.agent.state": "speaking"
+            },
+            {
+              "lk.agent.state": "speaking"
+            }
+          ],
+          [
+            32.004921875020955,
+            "agent",
+            {
+              "lk.agent.state": "listening"
+            },
+            {
+              "lk.agent.state": "listening"
+            }
+          ]
+        ],
+        "device_received_server_reply": true,
+        "device_sent_renderer_flush_ack": true,
+        "linked_participant": "device",
+        "local_session_state_events": [
+          [
+            28.61305116600124,
+            "initializing",
+            "listening"
+          ],
+          [
+            31.566930458007846,
+            "listening",
+            "speaking"
+          ],
+          [
+            32.00015908299247,
+            "speaking",
+            "listening"
+          ]
+        ],
+        "renderer_ack_to_last_tone_ms": 57.7,
+        "roomio_queue_after_interrupt_future_ms": 0.0,
+        "roomio_queue_after_unauthorized_ms": 206.5,
+        "roomio_queue_before_unauthorized_ms": 207.4,
+        "speech_generator_cancelled": true,
+        "tone_frames_after_renderer_flush_ack": 6,
+        "unauthorized_request_left_speech_running": true,
+        "unauthorized_senders": [
+          "attacker"
+        ]
+      },
+      "id": "authorized_interrupt_cancel_and_renderer_flush",
+      "status": "pass"
+    },
+    {
+      "assertions": {
+        "generator_not_cancelled": true,
+        "interrupt_rejected": true,
+        "speech_continued": true
+      },
+      "evidence": {
+        "continued_after_request": true,
+        "errors": [
+          "RuntimeError"
+        ],
+        "generator_cancelled_during_probe": false,
+        "replies": [
+          {
+            "kind": "interrupt_rejected",
+            "type": "RuntimeError"
+          }
+        ]
+      },
+      "id": "noninterruptible_policy_preserved",
+      "status": "pass"
+    }
+  ],
+  "created_utc": "2026-10-20",
+  "environment": {
+    "firmware_livekit_c": "0.3.10",
+    "livekit_agents": "1.8.8",
+    "livekit_api": "1.2.2",
+    "livekit_rtc": "1.1.20",
+    "livekit_server": "1.13.6",
+    "python": "3.14"
+  },
+  "format_version": 1,
+  "harness": {
+    "agent_session": "real AgentSession + standard RoomIO",
+    "all_assertions_passed": true,
+    "assertions": 46,
+    "assertions_executed_including_smoke": 49,
+    "audio": "deterministic synthetic PCM tones, no recordings retained",
+    "cli_failure_exit_on_nonpass": true,
+    "copied_repository_probe_smoke_runs": 1,
+    "failed_or_inconclusive_cases": 0,
+    "final_artifact_smoke": {
+      "assertions": {
+        "live_audio_recovered_after_native_timeout": true,
+        "pre_was_sent_before_session_start": true,
+        "preroll_not_replayed_after_registration": true
+      },
+      "case": "pre_roomio_registration",
+      "failed": 0,
+      "live_tone_frames": 80,
+      "pre_tone_frames": 0,
+      "registration_lag_ms": 4,
+      "status": "pass",
+      "summary_count": 1
+    },
+    "full_case_runs": 10,
+    "interrupt_control": "reliable LiveKit data packet with linked-participant identity check; separate renderer flush acknowledgment",
+    "passed_case_runs": 12,
+    "passed_cases": 11,
+    "provider_calls": false,
+    "realtime_path": "local RealtimeModel/RealtimeSession test double; delayed update_instructions emulates awaited startup boundary",
+    "separate_registration_race_run": 1,
+    "session_mode": "audio-enabled at AgentSession.start; text-first/lazy-audio path was source-audited only",
+    "total_probe_process_runs": 12,
+    "unique_assertions": 46,
+    "unique_cases": 11
+  },
+  "harness_cleanup": {
+    "ffi_handle_drop_assertions_in_full_run": 30,
+    "ffi_handle_drop_assertions_in_race_run": 7,
+    "functional_cases_still_passed": true,
+    "note": "The SDK emitted FfiHandle.__del__ AssertionErrors during Python teardown; no production/dependency workaround was attempted.",
+    "test_process_exit_code": 0
+  },
+  "interrupt_tail_note": "57.7 ms was the asserted full-suite run; 66.2 ms was a paced repeat and 126.2 ms a faster burst-source repeat. All were synthetic RTP receive-tail measurements, not acoustic or C-SDK measurements.",
+  "interrupt_tail_repeat_measurements_ms": [
+    57.7,
+    66.2,
+    126.2
+  ],
+  "scope_limits": [
+    "No physical C SDK or ESP32 test",
+    "No real STT/model/provider request",
+    "No GPTLive delegation exercised",
+    "No real tool/IoT action",
+    "No acoustic renderer or hardware wake-word acceptance",
+    "Text-first InitialSessionMode.TEXT lazy-audio path starts with RoomIO audio disabled and later attaches input with pre_connect_audio_handler=None; native pre-roll is not available there in the current agent path."
+  ],
+  "security_bounds": {
+    "firmware_probe_duration_ms": 200,
+    "firmware_probe_payload_bytes": 6400,
+    "preconnect_handler_checks_sender_identity": false,
+    "preconnect_handler_enforces_payload_byte_cap": false,
+    "recommended_sender_side_cap": "Bound payload and duration in the device; validate authenticated room/participant ownership at the application boundary."
+  },
+  "transport": {
+    "host_bind": "127.0.0.1",
+    "isolated_livekit_server": true,
+    "ports": {
+      "http": 27880,
+      "rtc_tcp": 27881,
+      "rtc_udp": 27882
+    },
+    "room_names_randomized": true,
+    "test_only_generated_credentials": true
+  }
+}

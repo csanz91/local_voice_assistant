@@ -29,6 +29,7 @@
 #include "utils.h"
 
 #include "engine.h"
+#include "audio_features.h"
 
 // MARK: - Constants
 static const char* TAG = "livekit_engine";
@@ -74,7 +75,7 @@ typedef struct {
         } cmd_connect;
 
         /// Detail for `EV_SIG_RES`.
-        livekit_pb_signal_response_t res;
+        livekit_pb_signal_response_t *res;
 
         /// Detail for `EV_SIG_STATE`.
         signal_state_t sig_state;
@@ -232,6 +233,7 @@ static void on_peer_sub_audio_info(esp_peer_audio_stream_info_t* info, void *ctx
 static void on_peer_sub_audio_frame(esp_peer_audio_frame_t* frame, void *ctx)
 {
     engine_t *eng = (engine_t *)ctx;
+    if (eng->options.audio_receive_filter && !eng->options.audio_receive_filter(eng->options.ctx)) return;
     av_render_audio_data_t audio_data = {
         .pts = frame->pts,
         .data = frame->data,
@@ -355,11 +357,10 @@ static engine_err_t send_add_audio_track(engine_t *eng)
         .type = LIVEKIT_PB_TRACK_TYPE_AUDIO,
         .source = LIVEKIT_PB_TRACK_SOURCE_MICROPHONE,
         .muted = false,
-        .audio_features_count = is_stereo ? 1 : 0,
-        .audio_features = { LIVEKIT_PB_AUDIO_TRACK_FEATURE_TF_STEREO },
         .layers_count = 0
     };
 
+    livekit_set_audio_features(&req, is_stereo, eng->options.enable_preconnect_buffer);
     if (signal_send_add_track(eng->signal_handle, &req) != SIGNAL_ERR_NONE) {
         ESP_LOGE(TAG, "Failed to publish audio track");
         return ENGINE_ERR_SIGNALING;
@@ -428,7 +429,7 @@ static bool on_signal_res(livekit_pb_signal_response_t *res, void *ctx)
     engine_t *eng = (engine_t *)ctx;
     engine_event_t ev = {
         .type = EV_SIG_RES,
-        .detail.res = *res
+        .detail.res = res
     };
     // Returning true takes ownership of the response; it will be freed later when the
     // queue is processed or flushed.
@@ -664,7 +665,9 @@ static void event_free(engine_event_t *ev)
             SAFE_FREE(ev->detail.cmd_connect.token);
             break;
         case EV_SIG_RES:
-            protocol_signal_response_free(&ev->detail.res);
+            protocol_signal_response_free(ev->detail.res);
+            free(ev->detail.res);
+            ev->detail.res = NULL;
             break;
         case EV_PEER_SDP:
             SAFE_FREE(ev->detail.peer_sdp.sdp);
@@ -844,7 +847,7 @@ static bool handle_state_connecting(engine_t *eng, const engine_event_t *ev)
             ESP_LOGW(TAG, "Engine already connecting, ignoring connect command");
             break;
         case EV_SIG_RES:
-            const livekit_pb_signal_response_t *res = &ev->detail.res;
+            const livekit_pb_signal_response_t *res = ev->detail.res;
             switch (res->which_message) {
                 case LIVEKIT_PB_SIGNAL_RESPONSE_LEAVE_TAG:
                     const livekit_pb_leave_request_t *leave = &res->message.leave;
@@ -854,6 +857,14 @@ static bool handle_state_connecting(engine_t *eng, const engine_event_t *ev)
                 case LIVEKIT_PB_SIGNAL_RESPONSE_ROOM_UPDATE_TAG:
                     const livekit_pb_room_update_t *room_update = &res->message.room_update;
                     handle_room_update(eng, room_update);
+                    break;
+                case LIVEKIT_PB_SIGNAL_RESPONSE_TRACK_PUBLISHED_TAG:
+                    if (!strcmp(res->message.track_published.cid, "a0") &&
+                        res->message.track_published.track.type == LIVEKIT_PB_TRACK_TYPE_AUDIO &&
+                        res->message.track_published.track.source == LIVEKIT_PB_TRACK_SOURCE_MICROPHONE &&
+                        eng->options.on_local_track_published) {
+                        eng->options.on_local_track_published(&res->message.track_published, eng->options.ctx);
+                    }
                     break;
                 case LIVEKIT_PB_SIGNAL_RESPONSE_UPDATE_TAG:
                     const livekit_pb_participant_update_t *update = &res->message.update;
@@ -948,7 +959,7 @@ static bool handle_state_connected(engine_t *eng, const engine_event_t *ev)
             ESP_LOGW(TAG, "Engine already connected, ignoring connect command");
             break;
         case EV_SIG_RES:
-            const livekit_pb_signal_response_t *res = &ev->detail.res;
+            const livekit_pb_signal_response_t *res = ev->detail.res;
             switch (res->which_message) {
                 case LIVEKIT_PB_SIGNAL_RESPONSE_LEAVE_TAG:
                     const livekit_pb_leave_request_t *leave = &res->message.leave;
@@ -958,6 +969,14 @@ static bool handle_state_connected(engine_t *eng, const engine_event_t *ev)
                 case LIVEKIT_PB_SIGNAL_RESPONSE_ROOM_UPDATE_TAG:
                     const livekit_pb_room_update_t *room_update = &res->message.room_update;
                     handle_room_update(eng, room_update);
+                    break;
+                case LIVEKIT_PB_SIGNAL_RESPONSE_TRACK_PUBLISHED_TAG:
+                    if (!strcmp(res->message.track_published.cid, "a0") &&
+                        res->message.track_published.track.type == LIVEKIT_PB_TRACK_TYPE_AUDIO &&
+                        res->message.track_published.track.source == LIVEKIT_PB_TRACK_SOURCE_MICROPHONE &&
+                        eng->options.on_local_track_published) {
+                        eng->options.on_local_track_published(&res->message.track_published, eng->options.ctx);
+                    }
                     break;
                 case LIVEKIT_PB_SIGNAL_RESPONSE_UPDATE_TAG:
                     const livekit_pb_participant_update_t *update = &res->message.update;

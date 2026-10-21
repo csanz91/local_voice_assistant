@@ -30,7 +30,7 @@ pub const MicChannel = enum { left, right };
 /// The channel this unit is installed with. COMPILE-TIME: xvf_pcm.zig derives the
 /// I2S slot + gain shift from it at comptime, so changing it needs a reflash.
 ///
-/// .left since 2026-07-08 (path B, ROADMAP §5): on the self-hosted SFU there is
+/// .left since 2026-07-08 (path B): on the self-hosted SFU there is
 /// no cloud BVC, so the raw ASR beam reaches the model with NO noise suppression
 /// and NO residual-echo cleanup — full-duplex feeds the agent its own voice back
 /// ("se acopla") and noisy rooms degrade transcription. The comms beam provides
@@ -96,7 +96,7 @@ pub fn load() void {
     fixed_beam = sebastian_cfg_get_bool("fixed_beam", fixed_beam);
     fixed_beam_azimuth_deg = @floatFromInt(sebastian_cfg_get_i32("beam_az", @intFromFloat(fixed_beam_azimuth_deg)));
     full_duplex = sebastian_cfg_get_bool("full_duplex", full_duplex);
-    // Session timing, governable from the control room since the fleet work
+    // Session timing, locally provisioned into NVS
     // (RF-40): the pure cores keep their compiled defaults as `pub const` for
     // the host tests and read these vars at runtime.
     const silence_ms = sebastian_cfg_get_i32("silence_ms", @intCast(session_core.SILENCE_TICKS * session_core.TICK_MS));

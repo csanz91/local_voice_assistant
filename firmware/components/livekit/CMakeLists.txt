@@ -1,5 +1,22 @@
 idf_component_register(
-    SRC_DIRS ./core ./protocol
+    # Explicit sources ensure newly added compatibility code rebuilds existing trees.
+    SRCS
+        ./core/data_stream_reader.c
+        ./core/data_stream_writer.c
+        ./core/engine.c
+        ./core/livekit.c
+        ./core/peer.c
+        ./core/protocol.c
+        ./core/rpc_manager.c
+        ./core/signaling.c
+        ./core/system.c
+        ./core/url.c
+        ./core/utils.c
+        ./protocol/livekit_metrics.pb.c
+        ./protocol/livekit_models.pb.c
+        ./protocol/livekit_rtc.pb.c
+        ./protocol/protocol_attributes.c
+        ./protocol/timestamp.pb.c
     PRIV_INCLUDE_DIRS ./core ./protocol
     INCLUDE_DIRS ./include
     REQUIRES

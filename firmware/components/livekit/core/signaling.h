@@ -86,7 +86,8 @@ typedef struct {
     ///
     /// The receiver returns true to take ownership of the response. If
     /// ownership is not taken (false), the response will be freed with
-    /// `protocol_signal_response_free` internally.
+    /// `protocol_signal_response_free` followed by free() internally. A receiver
+    /// taking ownership must likewise release the fields and the heap object.
     ///
     bool (*on_res)(livekit_pb_signal_response_t *res, void *ctx);
 } signal_options_t;

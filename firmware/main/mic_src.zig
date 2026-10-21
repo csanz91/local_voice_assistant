@@ -63,7 +63,8 @@ var live_flag = std.atomic.Value(bool).init(false);
 /// the pre-roll ring through connect); the capture pipeline gets silence
 /// without touching the bus. app.zig flips this at the handoff event.
 pub fn setLive(v: bool) void {
-    live_flag.store(v, .monotonic);
+    if (!v) publishWakeObservation(false, true);
+    live_flag.store(v, .release);
 }
 
 /// Full-duplex is a RUNTIME decision, not just config.full_duplex: it is only
@@ -86,19 +87,27 @@ pub fn isFullDuplexActive() bool {
 // the agent speaks its own voice would come back through the mic as crisp phantom
 // user turns and the room feeds on itself. The agent announces speaking over the
 // data channel; we send silence for the duration plus a short reverb tail.
+pub var on_local_wake: ?*const fn () void = null;
 var barge_flag = std.atomic.Value(bool).init(false);
-// Meeting recordings (spec 13 RM-12/21): nobody speaks for the agent, so the
-// wake word is listened for on the live mic the whole time, not only while
-// the agent's speech is gated.
-var listen_flag = std.atomic.Value(bool).init(false);
-
-pub fn setWakeListen(v: bool) void {
-    if (v) wakeword.bargeReset();
-    listen_flag.store(v, .monotonic);
+// Callbacks/main only publish; every WakeDetector mutation and CNN reset belongs to
+// the capture task. No plain detector fields cross the task boundary.
+var wake_observation = std.atomic.Value(u32).init(0);
+var wake_detector = gate_core.WakeDetector{};
+fn publishWakeObservation(speaking: bool, reset: bool) void {
+    var current = wake_observation.load(.monotonic);
+    while (true) {
+        const next = gate_core.wakeObservation(current, speaking, reset);
+        if (wake_observation.cmpxchgWeak(current, next, .release, .monotonic)) |actual| current = actual else return;
+    }
 }
-
+pub fn noteAgentState(speaking: bool) void {
+    publishWakeObservation(speaking, false);
+}
+fn synchronizeWakeDetector() void {
+    if (wake_detector.observePublished(wake_observation.load(.acquire))) wakeword.bargeReset();
+}
 pub fn setAgentSpeaking(v: bool) void {
-    if (gate.setAgentSpeaking(v)) wakeword.bargeReset(); // fresh detector window per burst
+    _ = gate.setAgentSpeaking(v);
 }
 
 /// True once when "Sebastián" was heard over the agent's speech. app.zig
@@ -291,29 +300,24 @@ fn agentGateActive() bool {
     return gate.agentGateActive();
 }
 
-fn detectBargeInFromGatedAudio(got: usize) void {
-    if (gate.muted) return;
+fn detectBargeIn(got: usize, agent_gated: bool) void {
+    if (!wake_detector.enabled(gate.muted, agent_gated)) return;
     if (got == 0) return;
 
-    trackGatedPeak(got); // residual echo the AEC left, invisible in mic_level
+    if (agent_gated) trackGatedPeak(got); // residual echo the AEC left, invisible in mic_level
     if (!wakeword.bargeFeed(read_buf[0 .. got * 2])) return;
 
+    wake_detector.detected();
     gate.agent_speaking = false;
     gate.speak_hangover = 0;
-    barge_flag.store(true, .monotonic);
+    barge_flag.store(true, .monotonic); // fallback if the callback queue is full
+    if (on_local_wake) |notify| notify();
     log.info("barge-in: wake word heard over agent speech", .{});
 }
 
-fn writeGatedFrame(out: [*]i16, got: usize, total: usize, agent_gated: bool) void {
-    if (agent_gated) detectBargeInFromGatedAudio(got);
+fn writeGatedFrame(out: [*]i16, total: usize) void {
     fillSilence(out, total);
     mic_level.store(0, .monotonic);
-}
-
-fn detectWakeInLiveAudio(got: usize) void {
-    if (got == 0 or !wakeword.bargeFeed(read_buf[0 .. got * 2])) return;
-    barge_flag.store(true, .monotonic);
-    log.info("wake word heard during the meeting", .{});
 }
 
 fn writeCapturedSamples(out: [*]i16, got: usize, total: usize) void {
@@ -356,19 +360,22 @@ fn readLiveSamples(frame: *c.esp_capture_stream_frame_t, total: usize) c_int {
     const out: [*]i16 = @ptrCast(@alignCast(frame.data));
     const got = readI2s(total) orelse return c.ESP_CAPTURE_ERR_INTERNAL;
     const agent_gated = agentGateActive();
+    // Same capture owner and AEC samples in either duplex mode. Full duplex
+    // continues forwarding live samples while the local wake detector listens.
+    detectBargeIn(got, agent_gated);
 
     if (gate.muted or agent_gated) {
-        writeGatedFrame(out, got, total, agent_gated);
+        writeGatedFrame(out, total);
         return c.ESP_CAPTURE_ERR_OK;
     }
 
-    if (listen_flag.load(.monotonic)) detectWakeInLiveAudio(got);
     writeCapturedSamples(out, got, total);
     return c.ESP_CAPTURE_ERR_OK;
 }
 
 fn readFrame(_: *c.esp_capture_audio_src_iface_t, frame: *c.esp_capture_stream_frame_t) callconv(.c) c_int {
     if (!instance.started) return c.ESP_CAPTURE_ERR_NOT_SUPPORTED;
+    synchronizeWakeDetector();
 
     const total = frameSampleCount(frame) orelse return c.ESP_CAPTURE_ERR_NOT_SUPPORTED;
     if (total == 0) return c.ESP_CAPTURE_ERR_OK;
@@ -376,7 +383,7 @@ fn readFrame(_: *c.esp_capture_audio_src_iface_t, frame: *c.esp_capture_stream_f
     // Pre-handoff: the wake task owns I2S and is filling the pre-roll ring.
     // Feed the pipeline silence without touching the bus — two concurrent
     // i2s_channel_read callers would steal frames from each other.
-    if (!live_flag.load(.monotonic)) {
+    if (!live_flag.load(.acquire)) {
         writeSilentFrame(frame, total);
         updatePts(frame, total);
         return c.ESP_CAPTURE_ERR_OK;
@@ -390,7 +397,7 @@ fn readFrame(_: *c.esp_capture_audio_src_iface_t, frame: *c.esp_capture_stream_f
     // Full-duplex (runtime, gated on a verified-fixed beam — see setFullDuplex)
     // bypasses the half-duplex gate: the mic stays live while the agent speaks and
     // the AEC-cancelled audio is forwarded so the user can talk over it naturally;
-    // interruption then rides the agent's own VAD, not the wake word. Half-duplex
+    // native VAD remains active alongside explicit local wake control. Half-duplex
     // (full_duplex_active=false, incl. the AEC-config-failed fallback) gates the
     // mic to silence during agent speech and keeps the wake-word barge-in below.
     // The button mute (muted_flag) always applies.

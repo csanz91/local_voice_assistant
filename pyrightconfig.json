@@ -1,9 +1,0 @@
-{
-  "venvPath": "agent",
-  "venv": ".venv",
-  "reportMissingImports": true,
-  "reportPrivateImportUsage": "none",
-  "executionEnvironments": [
-    { "root": "agent", "extraPaths": ["agent"] }
-  ]
-}

@@ -1,165 +1,104 @@
-# Provisioning protocol
+# Local provisioning protocol
 
-The installer page uses Web Serial to send one newline-terminated command after the
-factory firmware has been flashed:
+The firmware accepts newline-terminated USB serial commands at 115200 baud:
 
 ```text
 sebastian.config.v1 {"schema":"sebastian.config.v1",...}
-```
-
-The firmware-side receiver is implemented in `firmware/main/provisioning.c`. It:
-
-1. Listens on the USB-Serial-JTAG console (a task started at boot).
-2. Procesa `sebastian.config.v1`, `sebastian.config.get` y `sebastian.profile.set`.
-3. Parses the JSON payload (cJSON).
-4. Checks `schema == "sebastian.config.v1"`.
-5. Stores into NVS (namespace `sebastian`): WiFi (`ssid`/`password`), and when
-   present `livekit.tokenServerUrl`, `telemetry.syslogIp`/`syslogPort`, the
-   operating `mode`, and the audio behaviour it implies — `audio.fullDuplex`,
-   `audio.fixedBeam`, `audio.fixedBeamAzimuthDeg`. A payload **without**
-   `wifi.password` keeps the password already stored (an empty string means an
-   open network).
-6. Replies `sebastian.config.ok` and restarts. On next boot the device reads
-   NVS: `sebastian_net_connect()` uses the WiFi creds, `token.zig` reads
-   `tokenServerUrl`, and `config.zig::load()` overrides its compiled defaults
-   with the stored audio/mode values **before** the XVF/AEC config is applied.
-
-El nombre `tokenServerUrl` se conserva por compatibilidad. El firmware deriva
-su origen y llama a `POST /v1/sessions` con MAC y secreto propio; no llama al
-`/token` legado. La identidad, sala y despacho se resuelven en ese recorrido.
-
-## The USB window and reading the config back
-
-The board only has a serial port during the **first 5 s after power-up**: the
-ESP32-S3 has one USB PHY and the firmware hands it to the USB microphone
-interface (TinyUSB) once the boot is done. After a crash or a firmware-initiated
-restart the port does not come back until the board is re-plugged.
-
-An already provisioned unit can be edited instead of retyped. The installer's
-"Load from device" sends
-
-```text
 sebastian.config.get
+sebastian.profile.set {"name":"micro-usb"}
 ```
 
-and the firmware answers with the stored config in the same shape (only the
-keys present in NVS, so the installer merges them over its defaults):
-
-```text
-sebastian.config.dump {"schema":"sebastian.config.v1","provisioned":true,"wifi":{"ssid":"Home","passwordSet":true},"livekit":{"tokenServerUrl":"http://192.168.1.10:8787"},"telemetry":{"syslogIp":"192.168.1.10","syslogPort":514},"mode":"half_duplex","audio":{"fullDuplex":false,"fixedBeam":true,"fixedBeamAzimuthDeg":0},"profiles":[...],"activeProfile":"agent"}
-```
-
-Two extras: `provisioned` (there is a WiFi SSID in NVS) and `wifi.passwordSet`.
-**The WiFi password never leaves the device**; the installer shows the field
-empty and omits the key on send unless the operator types a new one.
-
-A `config.get` also **holds the USB window open for 120 s** (`HOLD_AFTER_GET_US`
-in `provisioning.c`; `app.zig` polls `sebastian_provisioning_hold()` before
-handing the PHY to TinyUSB), so the edited config can come back on the same
-port. The installer keeps the port open between load and send and shows the
-countdown; past it, re-plug the board.
-
-### Fleet fields (2026-09-18)
-
-- `adoption.orgSecret` / `adoption.deviceSecret`: the secrets of
-  docs/implementation/11-fleet-adoption-control-room.md §5. The device secret
-  is born with the unit (generated at first boot, kept across adoptions,
-  readable with `sebastian.config.get`); a document only carries it to rotate
-  it. A unit that has `orgSecret` and whose control room (`tokenServerUrl`)
-  does not hold its secret yet enrols on its own (`/v1/devices/{id}/enroll`),
-  handing the secret over: that is how a unit provisioned from the embedded
-  installer is born adopted. Stored as
-  `org_secret` / `dev_secret`; an empty string erases them (that is what the
-  control room's *forget* sends). The firmware opens sessions through
-  `POST /v1/sessions` with the device secret; without one it cannot open any.
-- `session.silenceTimeoutMs` / `session.voiceLevel`: now stored (`silence_ms`,
-  `voice_lvl`) and read at boot — no longer compile-time.
-- `configVersion`: the control room's desired-config version this document
-  carries; echoed as `cfg=` in every reconciliation poll.
-- `wifi` is optional in a document pushed over the network (adoption, desired
-  config). A WiFi change pushed that way is a **trial**: no IP within 2 min and
-  the device restores the previous network, restarts and announces
-  `err=wifi-rollback`. Over USB the change is final (the unit is in hand).
-
-Not stored on-device (still compile-time — a reflash, not a re-provision):
-`audio.micChannel` (it feeds comptime slot/shift selection in `xvf_pcm.zig`)
-and the boot self-tests
-(`probeAecOnBoot` etc.). The self-tests are intentionally compile-time: as runtime
-flags they defeat dead-code elimination and keep ~15 KB of static probe buffers in
-internal RAM, which starves the TLS hardware-AES DMA and kills the LiveKit
-connection. Enabling one is a reflash.
-
-Suggested acknowledgement:
-
-```text
-sebastian.config.ok
-```
-
-Suggested validation failure:
-
-```text
-sebastian.config.err <reason>
-```
-
-## Payload
-
-The canonical contract is
-[`sebastian-config.schema.json`](sebastian-config.schema.json). The example below is
-valid for `schema = "sebastian.config.v1"`.
+A config write replies `sebastian.config.ok` and restarts. Validation failures
+reply `sebastian.config.err <reason>`. The complete command, including prefix and
+newline, must fit within 8191 UTF-8 bytes. A document is a partial update: omitted
+fields keep their current NVS values. The web form fills ordinary settings with
+defaults, but preserves omission for credentials and profiles.
 
 ```json
 {
   "schema": "sebastian.config.v1",
   "mode": "full_duplex",
-  "wifi": {
-    "ssid": "Home",
-    "password": "secret",
-    "hidden": false
-  },
+  "wifi": {"ssid": "Home", "password": "replace-me"},
   "livekit": {
-    "tokenServerUrl": "http://192.168.1.10:8787",
-    "deviceIdentity": "esp32-respeaker",
-    "room": "sebastian",
-    "agentName": "sebastian"
+    "tokenServerUrl": "https://api.example.com/api/v2/device-voice-session",
+    "allowInsecureHttp": false
   },
-  "telemetry": {
-    "syslogIp": "192.168.1.10",
-    "syslogPort": 514,
-    "otlpEndpoint": "https://otel.example.com",
-    "grafanaUrl": "https://grafana.example.com/d/sebastian-device"
-  },
-  "audio": {
-    "micChannel": "left",
-    "fixedBeam": true,
-    "fixedBeamAzimuthDeg": 0,
-    "fullDuplex": true
-  },
-  "session": {
-    "silenceTimeoutMs": 12000,
-    "voiceLevel": 3000
-  }
+  "device": {"secret": "replace-with-a-per-device-credential"},
+  "telemetry": {"syslogIp": "", "syslogPort": 514},
+  "audio": {"fullDuplex": true, "fixedBeam": true, "fixedBeamAzimuthDeg": 0},
+  "session": {"silenceTimeoutMs": 12000, "voiceLevel": 3000},
+  "profiles": [
+    {"name": "agente", "mode": "agent"},
+    {"name": "micro-usb", "mode": "usb_mic", "fixedBeam": false}
+  ],
+  "activeProfile": "agente"
 }
 ```
 
-## Firmware mapping
+`tokenServerUrl` retains its old NVS-compatible name but now means the **complete
+session endpoint**. The firmware posts directly to that URL without appending a
+path. Update older origin-only URLs; an NVS erase is unnecessary. Endpoint URLs
+are limited to 255 UTF-8 bytes and cannot contain credentials, fragments,
+whitespace or control characters. HTTPS uses certificate validation. Local HTTP
+requires `allowInsecureHttp: true`; this opt-in never disables HTTPS verification.
 
-| Field | On-device source | Applied today? |
-|---|---|---|
-| `wifi.ssid` / `wifi.password` | NVS, read by `sebastian_net_connect()` | ✅ before WiFi connect |
-| `wifi.hidden` | — | ❌ not consumed yet |
-| `livekit.tokenServerUrl` | NVS, read by `token.zig` | ✅ per-session token fetch |
-| `livekit.deviceIdentity` / `room` / `agentName` | Identidad MAC y sesión/dispatch del servidor Go | No; campos conservados por compatibilidad |
-| `telemetry.syslogIp` / `syslogPort` | NVS, read by `syslog_sink.c` | ✅ UDP syslog sink from boot |
-| `telemetry.otlpEndpoint` / `grafanaUrl` | `tools/telemetry/bridge.py` / env | ❌ device-side OTLP is future work |
-| `mode`, `audio.fullDuplex`, `audio.fixedBeam`, `audio.fixedBeamAzimuthDeg` | NVS → `config.zig::load()` | ✅ applied at boot |
-| `audio.micChannel` | `config.zig` comptime → `xvf_pcm.zig` slot/shift | ❌ reflash only |
-| boot self-tests (`probeAecOnBoot` etc.) | `config.zig` comptime (elides ~15 KB probe buffers) | ❌ reflash only |
-| `session.silenceTimeoutMs` / `voiceLevel` | NVS → `config.zig::load()` → `session_core` / `session_reducer` | ✅ applied at boot |
-| `adoption.orgSecret` / `deviceSecret` | NVS, read by `adopt.c` / `token.zig` | ✅ adoption auth / `POST /v1/sessions` |
-| `configVersion` | NVS, echoed by `control.zig` | ✅ reconciliation |
+Session authentication uses `Authorization: Bearer <device.secret>`. Provision
+an owner-issued, voice-scoped device JWT from
+`POST /api/v2/device-voice-credential/device_id/{device_id}` while signed into
+IoTCloud as the current device owner. It expires after 90 days; renew manually
+before expiry. Ordinary MQTT tokens and user OIDC tokens are not device voice
+credentials. `POST /api/v2/device-voice-session` returns HTTP `200` and
+`{"serverUrl":"wss://…","participantToken":"…","roomName":"…","conversationId":"…"}`.
+Provider and LiveKit signing keys remain on the server.
 
-## Security
+## Credentials and config dumps
 
-Do not send LiveKit API secrets, OpenAI keys, or Grafana admin credentials to the
-device. The device should only know how to reach a token server that mints scoped
-short-lived LiveKit tokens.
+Omitting `wifi.password` or `device.secret` preserves the stored value. Empty
+`wifi.password` selects an open network. Empty `device.secret` deliberately clears
+it; voice sessions remain unavailable until a replacement JWT is provisioned.
+Credentials use up to 1024 printable ASCII characters without spaces.
+The installer can
+import legacy `adoption.deviceSecret` into `device.secret`; organization adoption
+is removed and `adoption.orgSecret` is discarded.
+
+`config.get` replies `sebastian.config.dump <JSON>` containing stored settings,
+`provisioned`, `wifi.passwordSet` and `device: {id, secret, secretSet}`. The WiFi
+password is never returned. The physical USB read includes the normalized
+hardware MAC ID and per-device credential so an operator can register them with
+their backend. The installer holds this readback separately from the editable
+config, previews, exports and logs. Use the private pairing panel's explicit
+Reveal or Copy action; protect the credential and clear the clipboard afterward.
+Merely loading and sending does not rotate or rewrite the credential. Legacy
+credential readback is likewise kept out of the editable document.
+
+Load keeps the serial connection open for 120 seconds so the
+same port can receive edits. Otherwise the boot serial window lasts around five
+seconds before the USB microphone takes the ESP32-S3 USB PHY. Replug after a
+restart or lost connection.
+
+## Settings
+
+| Field | Behavior |
+| --- | --- |
+| `mode` | Sets the full/half duplex audio preset; explicit audio keys can override it. |
+| `wifi.ssid` / `password` | WiFi credentials, applied on boot. SSID max 32 bytes; password max 64 bytes. |
+| `livekit.tokenServerUrl` / `allowInsecureHttp` | Complete session endpoint and explicit development HTTP opt-in. |
+| `device.secret` | Per-device session credential; absent preserves, empty clears. |
+| `telemetry.syslogIp` / `syslogPort` | Optional IPv4 UDP syslog receiver. Empty IP disables remote logging. |
+| `audio.fullDuplex` / `fixedBeam` / `fixedBeamAzimuthDeg` | Stored audio settings, applied at boot before XVF/AEC setup. |
+| `session.silenceTimeoutMs` / `voiceLevel` | Silence timeout 5000–120000 ms; voice threshold 1–32767. |
+| `profiles` | Up to six named agent/USB microphone profiles. Omitted preserves; `[]` restores built-ins. Stored JSON max 1023 bytes. |
+| `activeProfile` | Selects a profile by name. Omitted preserves existing selection. |
+
+Profiles have a unique `name` of 1–23 UTF-8 bytes, optional `mode` (`agent` or
+`usb_mic`) and optional `fullDuplex`, `fixedBeam`, `beamAzimuthDeg`, `wifi` and
+`telemetry` overrides. A selected profile can override the global audio settings.
+The existing profile selector and boot-failure guard remain firmware features.
+
+The microphone channel is compiled as LEFT/comms. Boot audio diagnostics also
+require a rebuild. Removed or ignored legacy fields (`wifi.hidden`,
+`audio.micChannel`, static LiveKit `deviceIdentity`/`room`/`agentName`, OTLP/Grafana
+settings and fleet config versions) are not presented as working device settings.
+The canonical document shape is
+[sebastian-config.schema.json](sebastian-config.schema.json); byte limits and
+cross-field constraints are also validated by the installer/firmware.

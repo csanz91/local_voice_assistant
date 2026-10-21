@@ -170,6 +170,17 @@ typedef enum {
     LIVEKIT_PARTICIPANT_STATE_DISCONNECTED = 3
 } livekit_participant_state_t;
 
+/// Track information. All strings/arrays in info callbacks are borrowed only
+/// until callback return; copy anything retained. type: audio=0, video=1;
+/// source: unknown=0, camera=1, microphone=2, screen share=3/4.
+typedef struct {
+    const char *sid;
+    const char *name;
+    int type;
+    int source;
+    bool muted;
+} livekit_track_info_t;
+
 /// Information about a participant in a room.
 /// @ingroup Info
 typedef struct {
@@ -185,6 +196,14 @@ typedef struct {
     livekit_participant_kind_t kind;
     /// The current state of the participant.
     livekit_participant_state_t state;
+    /// Up to 16 bounded attributes; lk.agent.state has priority on overflow.
+    const livekit_attribute_t *attributes;
+    size_t attributes_count;
+    /// Up to 8 tracks from this snapshot, with bounded names (63 characters).
+    const livekit_track_info_t *tracks;
+    size_t tracks_count;
+    /// More attributes/tracks existed than could be exposed.
+    bool info_truncated;
 } livekit_participant_info_t;
 
 /// Options for creating a room.
@@ -225,6 +244,15 @@ typedef struct {
 
     /// User context passed to all handlers.
     void* ctx;
+    /// Server acknowledgement for this client's microphone publication (CID a0).
+    /// Borrowed track and strings live only for callback duration.
+    void (*on_local_track_published)(const char *cid, const livekit_track_info_t *track, void *ctx);
+    /// Opt-in native microphone pre-connect buffer feature; preserves stereo.
+    bool enable_preconnect_buffer;
+    /// Optional nonblocking, thread-safe inbound encoded audio gate. False drops
+    /// the frame before renderer enqueue. Runs on the peer thread, with ctx.
+    /// A renderer flush must be coordinated separately by the application.
+    bool (*audio_receive_filter)(void *ctx);
 } livekit_room_options_t;
 
 /// @defgroup System System Initialization

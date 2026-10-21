@@ -95,9 +95,8 @@ static bool parse_profile(const cJSON *obj, sebastian_profile_t *p) {
 int sebastian_profiles_load(sebastian_profile_t *out, int max) {
     nvs_ensure_init();
 
-    // NVS strings are capped well below this; the provisioning line buffer
-    // (1 KB) is the real limit on how big the provisioned array can get.
-    static char json[1024];
+    // Provisioning enforces this same capacity before writing the NVS string.
+    static char json[SEBASTIAN_PROFILES_JSON_CAPACITY];
     if (!read_str(KEY_PROFILES, json, sizeof(json))) return builtin_profiles(out, max);
 
     cJSON *root = cJSON_Parse(json);

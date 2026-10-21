@@ -174,46 +174,6 @@ test "pcm convert bounds raw i32 extremes" {
     try std.testing.expect(low >= std.math.minInt(i16));
 }
 
-test "pre-roll header is stable little-endian SBPR" {
-    const header = pre_roll.makeHeader(0x11223344, 0x55667788, 0);
-
-    try std.testing.expectEqualSlices(u8, "SBPR", header[0..4]);
-    try std.testing.expectEqual(@as(u8, 1), header[4]);
-    try std.testing.expectEqual(@as(u8, 0), header[5]);
-    try std.testing.expectEqual(@as(u8, 0x80), header[6]);
-    try std.testing.expectEqual(@as(u8, 0x3e), header[7]);
-    try std.testing.expectEqual(@as(u8, 0x88), header[8]);
-    try std.testing.expectEqual(@as(u8, 0x77), header[9]);
-    try std.testing.expectEqual(@as(u8, 0x66), header[10]);
-    try std.testing.expectEqual(@as(u8, 0x55), header[11]);
-    try std.testing.expectEqual(@as(u8, 0x44), header[12]);
-    try std.testing.expectEqual(@as(u8, 0x33), header[13]);
-    try std.testing.expectEqual(@as(u8, 0x22), header[14]);
-    try std.testing.expectEqual(@as(u8, 0x11), header[15]);
-}
-
-test "pre-roll header declares the duplex mode actually in force" {
-    const half = pre_roll.makeHeader(1, 1, pre_roll.makeFlags(false));
-    const full = pre_roll.makeHeader(1, 1, pre_roll.makeFlags(true));
-
-    // Both state that they know; only one is full-duplex.
-    try std.testing.expect(half[5] & pre_roll.FLAG_DECLARED != 0);
-    try std.testing.expect(full[5] & pre_roll.FLAG_DECLARED != 0);
-    try std.testing.expect(half[5] & pre_roll.FLAG_FULL_DUPLEX == 0);
-    try std.testing.expect(full[5] & pre_roll.FLAG_FULL_DUPLEX != 0);
-
-    // Byte 5 was reserved and always zero: a pre-roll from older firmware must
-    // stay distinguishable from one that declares half-duplex, or the agent
-    // would read "no opinion" as "half" and arm nothing on a full-duplex unit.
-    const legacy = pre_roll.makeHeader(1, 1, 0);
-    try std.testing.expectEqual(@as(u8, 0), legacy[5]);
-    try std.testing.expect(legacy[5] & pre_roll.FLAG_DECLARED == 0);
-
-    // The rest of the header must not move: same bytes as the legacy layout.
-    try std.testing.expectEqualSlices(u8, legacy[0..5], half[0..5]);
-    try std.testing.expectEqualSlices(u8, legacy[6..], half[6..]);
-}
-
 test "pre-roll window is anchored to wake mark" {
     const sr: usize = pre_roll.SAMPLE_RATE;
     const sr64: u64 = pre_roll.SAMPLE_RATE;
@@ -1010,6 +970,7 @@ test "session max duration is a hard cap" {
 fn liveSession() reducer.State {
     var st = reducer.State{};
     _ = st.step(.{ .agent_active = true });
+    _ = st.step(.{ .mic_published = true });
     const a = st.step(.{ .tick = .{ .connection = .connected } });
     std.debug.assert(a.handoff);
     _ = st.step(.{ .preroll_sent = true });
@@ -1019,6 +980,7 @@ fn liveSession() reducer.State {
 test "reducer stays out of the room until CONNECTED" {
     var st = reducer.State{};
     _ = st.step(.{ .agent_active = true });
+    _ = st.step(.{ .mic_published = true });
     const a = st.step(.{ .tick = .{ .connection = .connecting } });
 
     try std.testing.expect(!a.ui_active);
@@ -1031,6 +993,7 @@ test "reducer handoff fires exactly once regardless of event order" {
     // the first CONNECTED tick lights the ring and hands off in one step.
     var st = reducer.State{};
     _ = st.step(.{ .agent_active = true });
+    _ = st.step(.{ .mic_published = true });
     var a = st.step(.{ .tick = .{ .connection = .connected } });
     try std.testing.expect(a.ui_active);
     try std.testing.expect(a.handoff);
@@ -1046,6 +1009,7 @@ test "reducer handoff fires exactly once regardless of event order" {
     try std.testing.expect(a.ui_active);
     try std.testing.expect(!a.handoff);
     _ = st2.step(.{ .agent_active = true });
+    _ = st2.step(.{ .mic_published = true });
     a = st2.step(.{ .tick = .{ .connection = .connected } });
     try std.testing.expect(!a.ui_active);
     try std.testing.expect(a.handoff);
@@ -1054,6 +1018,7 @@ test "reducer handoff fires exactly once regardless of event order" {
     _ = st2.step(.{ .preroll_sent = true });
     _ = st2.step(.{ .agent_active = false });
     _ = st2.step(.{ .agent_active = true });
+    _ = st2.step(.{ .mic_published = true });
     a = st2.step(.{ .tick = .{ .connection = .connected } });
     try std.testing.expect(!a.handoff);
 }
@@ -1149,51 +1114,20 @@ test "reducer barge-in publishes the interrupt and counts as voice activity" {
     try std.testing.expectEqual(st.timing.tick - 1, st.timing.last_voice_tick);
 }
 
-test "reducer pre-roll retry cadence gives up after max attempts" {
+test "native handoff requires local microphone SID and roomio track, never retries a partial stream" {
     var st = reducer.State{};
     _ = st.step(.{ .agent_active = true });
-    const first = st.step(.{ .tick = .{ .connection = .connected } });
-    try std.testing.expect(first.handoff);
-    _ = st.step(.{ .preroll_sent = false }); // initial send failed
-    try std.testing.expectEqual(reducer.Preroll.pending, st.preroll);
-
-    // Voice on every tick so the silence watchdog never interferes; run past
-    // the full retry window and count the retry actions the reducer emits.
-    var retries: u32 = 0;
-    const horizon = reducer.PREROLL_RETRY_TICKS * (reducer.PREROLL_MAX_ATTEMPTS + 3);
-    while (st.timing.tick < horizon) {
-        const a = st.step(.{ .tick = .{ .connection = .connected, .mic_level = reducer.VOICE_LEVEL } });
-        if (a.retry_preroll) {
-            retries += 1;
-            try std.testing.expectEqual(retries, st.preroll_attempts);
-            try std.testing.expectEqual(@as(u32, 0), (st.timing.tick - 1) % reducer.PREROLL_RETRY_TICKS);
-            _ = st.step(.{ .preroll_sent = false });
-        }
-    }
-
-    try std.testing.expectEqual(reducer.PREROLL_MAX_ATTEMPTS, retries);
-    try std.testing.expectEqual(reducer.Preroll.given_up, st.preroll);
-    try std.testing.expect(st.phase == .live); // giving up never closes the session
-}
-
-test "reducer pre-roll retry stops after a successful send" {
-    var st = reducer.State{};
-    _ = st.step(.{ .agent_active = true });
-    _ = st.step(.{ .tick = .{ .connection = .connected } });
+    var a = st.step(.{ .tick = .{ .connection = .connected } });
+    try std.testing.expect(!a.handoff);
+    _ = st.step(.{ .mic_published = true });
+    a = st.step(.{ .tick = .{ .connection = .connected } });
+    try std.testing.expect(a.handoff);
     _ = st.step(.{ .preroll_sent = false });
-
-    var retries: u32 = 0;
-    const horizon = reducer.PREROLL_RETRY_TICKS * 6;
-    while (st.timing.tick < horizon) {
-        const a = st.step(.{ .tick = .{ .connection = .connected, .mic_level = reducer.VOICE_LEVEL } });
-        if (a.retry_preroll) {
-            retries += 1;
-            _ = st.step(.{ .preroll_sent = true }); // delivered on the first retry
-        }
+    try std.testing.expectEqual(reducer.Preroll.given_up, st.preroll);
+    for (0..600) |_| {
+        a = st.step(.{ .tick = .{ .connection = .connected } });
+        try std.testing.expect(!a.handoff);
     }
-
-    try std.testing.expectEqual(@as(u32, 1), retries);
-    try std.testing.expectEqual(reducer.Preroll.idle, st.preroll);
 }
 
 test "reducer silence watchdog closes an agentless session at the boundary" {
@@ -1316,30 +1250,6 @@ test "selector absolute timeout confirms even while the button keeps toggling" {
     }
 }
 
-// ── Control-plane URL derivation ──────────────────────────────────────────────
-
-const url_core = @import("main/core/url_core.zig");
-
-test "url origin strips the path keeping scheme, host and port" {
-    try std.testing.expectEqualStrings("http://10.0.0.5:8080", url_core.origin("http://10.0.0.5:8080/token"));
-    try std.testing.expectEqualStrings("https://sebastian.zetesis.xyz", url_core.origin("https://sebastian.zetesis.xyz/api/token?room=x"));
-}
-
-test "url origin passes through inputs without scheme or path" {
-    try std.testing.expectEqualStrings("http://host:9000", url_core.origin("http://host:9000"));
-    try std.testing.expectEqualStrings("host/no-scheme", url_core.origin("host/no-scheme"));
-}
-
-test "query-safe events travel verbatim in the poll, anything else is dropped" {
-    try std.testing.expect(url_core.isQuerySafe(""));
-    try std.testing.expect(url_core.isQuerySafe("adopt-denied:10.0.0.77"));
-    try std.testing.expect(url_core.isQuerySafe("cfg-rejected:wifi"));
-    try std.testing.expect(url_core.isQuerySafe("wifi-rollback"));
-    try std.testing.expect(!url_core.isQuerySafe("bad value"));
-    try std.testing.expect(!url_core.isQuerySafe("a&b=c"));
-    try std.testing.expect(!url_core.isQuerySafe("100%"));
-}
-
 // ── USB↔agent mic arbitration (modo convivencia) ─────────────────────────────
 
 const arbiter_core = @import("main/core/arbiter_core.zig");
@@ -1398,75 +1308,193 @@ test "arbiter survives pathological flapping without livelock" {
     try std.testing.expectEqual(@as(u32, 0), grants + revokes);
 }
 
-// ── MUTE gestures for meeting recordings (RM-02/20/50) ───────────────────────
+const device_voice = @import("main/core/device_voice.zig");
+test "agent binding rejects missing, oversize and replacement identities" {
+    var id = device_voice.Identity{};
+    try std.testing.expect(!id.matches("agent"));
+    try std.testing.expect(!id.bind(""));
+    try std.testing.expect(!id.bind(&([_]u8{'a'} ** 128)));
+    try std.testing.expect(id.bind("agent-1"));
+    try std.testing.expect(id.bind("agent-1"));
+    try std.testing.expect(!id.bind("agent-2"));
+    try std.testing.expect(!id.matches("agent-2"));
+}
 
-const gesture = @import("main/core/gesture_core.zig");
+test "wake ACK does not reopen playback through late RTP or non-listening state" {
+    var d = device_voice.Drain{};
+    d.start();
+    d.acknowledge(true);
+    for (0..30) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(true, true));
+    for (0..20) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(false, false));
+    try std.testing.expectEqual(device_voice.Drain.Action.reopen, d.tick(false, true));
+}
 
-/// Replays a press/release script sampled every 80 ms and returns the
-/// verdicts that were not .none, in order.
-fn replay(script: []const struct { pressed: bool, ms: u32 }, tail_ms: u32, out: []gesture.Verdict) []gesture.Verdict {
-    var d = gesture.Detector{};
-    var n: usize = 0;
-    var t: u32 = 0;
-    var i: usize = 0;
-    const end = script[script.len - 1].ms + tail_ms;
-    while (t <= end) : (t += 80) {
-        while (i + 1 < script.len and script[i + 1].ms <= t) i += 1;
-        const pressed = script[i].pressed and script[i].ms <= t;
-        const v = d.feed(pressed, t);
-        if (v != .none) {
-            out[n] = v;
-            n += 1;
-        }
+test "wake missing ACK or continuous stale output closes within bounded deadline" {
+    for ([_]bool{ false, true }) |ack| {
+        var d = device_voice.Drain{};
+        d.start();
+        if (ack) d.acknowledge(true);
+        for (0..499) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(ack, true));
+        try std.testing.expectEqual(device_voice.Drain.Action.close, d.tick(ack, true));
     }
-    return out[0..n];
 }
 
-test "gesture: a short tap is the mute of always, reported once the gap elapsed" {
-    var out: [4]gesture.Verdict = undefined;
-    const got = replay(&.{ .{ .pressed = true, .ms = 0 }, .{ .pressed = false, .ms = 240 } }, 2000, &out);
-    try std.testing.expectEqualSlices(gesture.Verdict, &.{.mute_tap}, got);
-    try std.testing.expectEqual(@as(u8, 0), gesture.togglesToUndo(.mute_tap));
+test "wake rejection resumes policy-controlled speech after conservative local hold" {
+    var d = device_voice.Drain{};
+    d.start();
+    d.acknowledge(false);
+    for (0..24) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(true, false));
+    try std.testing.expectEqual(device_voice.Drain.Action.reopen, d.tick(true, false));
+    d.acknowledge(true); // late ACK after resolved request is inert
+    try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(false, true));
 }
 
-test "gesture: a long press alone does nothing and undoes the XVF's toggle" {
-    var out: [4]gesture.Verdict = undefined;
-    const got = replay(&.{ .{ .pressed = true, .ms = 0 }, .{ .pressed = false, .ms = 2000 } }, 2000, &out);
-    try std.testing.expectEqualSlices(gesture.Verdict, &.{.long_alone}, got);
-    try std.testing.expectEqual(@as(u8, 1), gesture.togglesToUndo(.long_alone));
+test "callback session epochs reject teardown and previous rooms" {
+    try std.testing.expect(!device_voice.currentSession(0, 1));
+    try std.testing.expect(!device_voice.currentSession(2, 1));
+    try std.testing.expect(device_voice.currentSession(2, 2));
 }
 
-test "gesture: short then long within a second toggles the recording (RM-02)" {
-    var out: [4]gesture.Verdict = undefined;
-    const got = replay(&.{
-        .{ .pressed = true, .ms = 0 },   .{ .pressed = false, .ms = 240 },
-        .{ .pressed = true, .ms = 800 }, .{ .pressed = false, .ms = 2600 },
-    }, 2000, &out);
-    try std.testing.expectEqualSlices(gesture.Verdict, &.{.record_toggle}, got);
-    try std.testing.expectEqual(@as(u8, 2), gesture.togglesToUndo(.record_toggle));
+test "wake drain deadline follows elapsed time under delayed ticks" {
+    var d = device_voice.Drain{};
+    d.start();
+    try std.testing.expectEqual(device_voice.Drain.Action.close, d.advance(5000, false, true));
 }
 
-test "gesture: short then long after more than a second is a tap and a lone long" {
-    var out: [4]gesture.Verdict = undefined;
-    const got = replay(&.{
-        .{ .pressed = true, .ms = 0 },    .{ .pressed = false, .ms = 240 },
-        .{ .pressed = true, .ms = 1600 }, .{ .pressed = false, .ms = 3600 },
-    }, 2000, &out);
-    try std.testing.expectEqualSlices(gesture.Verdict, &.{ .mute_tap, .long_alone }, got);
+test "local wake immediately flushes renderer and opens mic before remote ACK" {
+    var st = liveSession();
+    _ = st.step(.{ .agent_state = .speaking });
+    const action = st.step(.local_wake);
+    try std.testing.expect(action.flush_render and action.publish_barge);
+    try std.testing.expectEqual(@as(?bool, false), action.mic_gate);
 }
 
-test "gesture: two short taps are two mutes" {
-    var out: [4]gesture.Verdict = undefined;
-    const got = replay(&.{
-        .{ .pressed = true, .ms = 0 },   .{ .pressed = false, .ms = 240 },
-        .{ .pressed = true, .ms = 560 }, .{ .pressed = false, .ms = 800 },
-    }, 2000, &out);
-    try std.testing.expectEqualSlices(gesture.Verdict, &.{ .mute_tap, .mute_tap }, got);
+test "wake detection operates during full duplex speech and half duplex tail, respects mute and once per burst" {
+    var w = gate.WakeDetector{};
+    try std.testing.expect(!w.enabled(false, false));
+    try std.testing.expect(w.observe(true));
+    try std.testing.expect(w.enabled(false, false)); // full duplex: mic ungated
+    try std.testing.expect(!w.enabled(true, false));
+    w.detected();
+    try std.testing.expect(!w.enabled(false, false));
+    try std.testing.expect(!w.observe(true)); // duplicate state is not a new burst
+    try std.testing.expect(!w.enabled(false, true));
+    _ = w.observe(false);
+    try std.testing.expect(w.observe(true));
+    try std.testing.expect(w.enabled(false, true));
+    _ = w.observe(false);
+    try std.testing.expect(w.enabled(false, true)); // existing half duplex hangover
 }
 
-test "gesture: a clumsy medium press is ignored and its toggle undone" {
-    var out: [4]gesture.Verdict = undefined;
-    const got = replay(&.{ .{ .pressed = true, .ms = 0 }, .{ .pressed = false, .ms = 960 } }, 2000, &out);
-    try std.testing.expectEqualSlices(gesture.Verdict, &.{.ignored}, got);
-    try std.testing.expectEqual(@as(u8, 1), gesture.togglesToUndo(.ignored));
+test "callback mailbox preserves readiness after saturated queue loses every notification" {
+    var mailbox = device_voice.Mailbox{};
+    // Model a full notification queue: callbacks still publish, but no queue
+    // items are consumed until all these callback notifications were dropped.
+    for (0..1000) |_| mailbox.publish(.{ .agent_active = true });
+    mailbox.publish(.{ .mic_published = true });
+    const snapshot = mailbox.take();
+    var st = reducer.State{};
+    _ = st.step(.{ .agent_active = snapshot.agent_ready });
+    _ = st.step(.{ .mic_published = snapshot.mic_ready });
+    const actions = st.step(.{ .tick = .{ .connection = .connected } });
+    try std.testing.expect(actions.handoff);
+    const again = mailbox.take();
+    try std.testing.expect(again.agent_ready and again.mic_ready);
+    try std.testing.expect(!st.step(.{ .tick = .{ .connection = .connected } }).handoff);
+}
+
+test "callback mailbox latest quiet clears speaking gate despite saturated notifications" {
+    var mailbox = device_voice.Mailbox{};
+    var st = liveSession();
+    _ = st.step(.{ .agent_state = .speaking });
+    for (0..1000) |_| mailbox.publish(.{ .agent_state = .speaking });
+    mailbox.publish(.{ .agent_state = .quiet });
+    const snapshot = mailbox.take();
+    const actions = st.step(.{ .agent_state = snapshot.state.? });
+    try std.testing.expectEqual(@as(?bool, false), actions.mic_gate);
+    try std.testing.expectEqual(reducer.AgentState.quiet, actions.ui_state.?);
+    try std.testing.expectEqual(@as(?reducer.AgentState, null), mailbox.take().state);
+}
+
+test "callback mailbox latches wake once and retains matching ACK without queue delivery" {
+    var mailbox = device_voice.Mailbox{};
+    for (0..1000) |_| mailbox.publish(.{ .agent_active = true });
+    mailbox.publish(.local_wake);
+    var snapshot = mailbox.take();
+    var st = liveSession();
+    try std.testing.expect(snapshot.local_wake);
+    const action = st.step(.local_wake);
+    try std.testing.expect(action.flush_render and action.publish_barge);
+    try std.testing.expect(!mailbox.take().local_wake); // no replay of prior wake
+    var drain = device_voice.Drain{};
+    drain.start();
+    mailbox.publish(.{ .wake_result = .{ .sequence = 42, .accepted = true } });
+    for (0..1000) |_| mailbox.publish(.{ .agent_active = true });
+    snapshot = mailbox.take();
+    if (snapshot.accepted_sequence == 42) drain.acknowledge(true);
+    try std.testing.expectEqual(device_voice.Drain.Action.reopen, drain.advance(250, false, true));
+    // A new wake uses a fresh sequence; retained ACK42 cannot resolve request43.
+    drain.start();
+    snapshot = mailbox.take();
+    if (snapshot.accepted_sequence == 43) drain.acknowledge(true);
+    try std.testing.expectEqual(device_voice.Drain.Action.none, drain.advance(250, false, true));
+    mailbox = .{}; // new room resets all latches after old callbacks stop
+    snapshot = mailbox.take();
+    try std.testing.expect(!snapshot.local_wake and !snapshot.agent_ready and !snapshot.mic_ready);
+    try std.testing.expectEqual(@as(u32, 0), snapshot.accepted_sequence);
+}
+
+test "callback mailbox close is sticky and cannot be replaced by later speaking updates" {
+    var mailbox = device_voice.Mailbox{};
+    mailbox.publish(.{ .agent_state = .close });
+    for (0..1000) |_| mailbox.publish(.{ .agent_state = .speaking });
+    const snapshot = mailbox.take();
+    try std.testing.expect(snapshot.close);
+    var st = liveSession();
+    _ = st.step(.{ .agent_state = .close }); // shell gives close priority
+    try std.testing.expectEqual(reducer.CloseReason.agent_close, st.phase.done);
+    try std.testing.expect(mailbox.take().close);
+}
+
+test "capture owns wake detector and epochs retain collapsed speaking changes and teardown reset" {
+    var published: u32 = 0;
+    var detector = gate.WakeDetector{};
+    published = gate.wakeObservation(published, true, false);
+    try std.testing.expect(detector.observePublished(published));
+    detector.detected(); // wake races main publishing quiet then a new reply
+    published = gate.wakeObservation(published, false, false);
+    published = gate.wakeObservation(published, true, false);
+    try std.testing.expect(detector.observePublished(published));
+    try std.testing.expect(detector.enabled(false, false));
+    detector.detected();
+    const duplicate = gate.wakeObservation(published, true, false);
+    try std.testing.expectEqual(published, duplicate);
+    try std.testing.expect(!detector.observePublished(duplicate));
+    try std.testing.expect(!detector.enabled(false, false));
+    published = gate.wakeObservation(published, false, true);
+    try std.testing.expect(!detector.observePublished(published));
+    try std.testing.expect(!detector.enabled(false, false));
+    try std.testing.expect(!detector.fired);
+    published = gate.wakeObservation(published, true, false);
+    try std.testing.expect(detector.observePublished(published));
+    try std.testing.expect(detector.enabled(false, false));
+}
+
+test "first drain advance excludes pre-request blocked idle and uses the actual wake clock origin" {
+    const previous_tick_us: i64 = 10_000;
+    const request_started_us: i64 = 60_000_000; // long pre-roll/AEC work before wake
+    var drain = device_voice.Drain{};
+    drain.start();
+    drain.acknowledge(false);
+    const first_ms = device_voice.drainElapsedMs(previous_tick_us, request_started_us, request_started_us + 10_000);
+    try std.testing.expectEqual(@as(u32, 10), first_ms);
+    try std.testing.expectEqual(device_voice.Drain.Action.none, drain.advance(first_ms, false, true));
+    try std.testing.expectEqual(@as(u32, 10), drain.elapsed_ms);
+    const second_ms = device_voice.drainElapsedMs(request_started_us + 10_000, request_started_us, request_started_us + 249_000);
+    try std.testing.expectEqual(device_voice.Drain.Action.none, drain.advance(second_ms, false, true));
+    try std.testing.expectEqual(device_voice.Drain.Action.reopen, drain.advance(1, false, true));
+    // A delay after the request starts is real elapsed time and retains timeout.
+    drain.start();
+    const delayed_ms = device_voice.drainElapsedMs(previous_tick_us, request_started_us, request_started_us + 5_000_000);
+    try std.testing.expectEqual(device_voice.Drain.Action.close, drain.advance(delayed_ms, false, true));
 }

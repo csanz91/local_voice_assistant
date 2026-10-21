@@ -15,6 +15,8 @@
 
 #define SEBASTIAN_PROFILE_NAME_MAX 24
 #define SEBASTIAN_PROFILES_MAX 6
+// Includes the trailing NUL; provisioning must reject larger compact JSON.
+#define SEBASTIAN_PROFILES_JSON_CAPACITY 1024
 
 #define SEBASTIAN_PROFILE_MODE_AGENT 0
 #define SEBASTIAN_PROFILE_MODE_USB_MIC 1

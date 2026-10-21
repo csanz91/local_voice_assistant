@@ -77,10 +77,8 @@ pub fn indexOf(name: []const u8) ?usize {
     return null;
 }
 
-/// WiFi capability of the active profile: on unless explicitly disabled
-/// (`wifi: false`). In usb_mic mode WiFi carries telemetry + the control-plane
-/// poll — the default is connected because an unreachable device is the
-/// failure mode we are eliminating.
+/// WiFi defaults on; usb_mic profiles may set wifi:false to remain offline.
+/// In USB mode the network carries optional diagnostics only.
 pub fn wifiEnabled() bool {
     return list[active].wifi != 0;
 }

@@ -49,7 +49,7 @@ export interface SharedGroup {
 }
 
 // ── read/write a config value by dot path (paths are always section.key) ──────
-// Sections may be absent (adoption is optional): reading one must not throw,
+// Sections may be absent (device is optional): reading one must not throw,
 // or the whole form dies with the field.
 // A top-level key ("mode") is read and written as such — spreading a string
 // into an object was how a mode once became {"0":"f","1":"u",…}.
@@ -66,20 +66,6 @@ export function setField(config: DeviceConfig, path: string, value: unknown): De
   return { ...config, [section]: { ...((config[section] ?? {}) as object), [key]: value } };
 }
 
-// ── reused field definitions ──────────────────────────────────────────────────
-const micChannel: FieldMeta = {
-  path: "audio.micChannel",
-  label: "Microphone channel",
-  type: "enum",
-  advanced: true,
-  options: [
-    { value: "right", label: "Raw ASR (recommended)" },
-    { value: "left", label: "Comms (on-chip NS)" },
-  ],
-  help:
-    "Which XVF3800 output is used. “Raw ASR” = clean beam with no on-chip noise suppression (let the agent do the single NS pass). “Comms” = de-reverb + NS + residual-echo suppression done on-chip, meant for full-duplex calls.",
-};
-
 const sessionFields: FieldMeta[] = [
   {
     path: "session.silenceTimeoutMs",
@@ -87,7 +73,7 @@ const sessionFields: FieldMeta[] = [
     label: "Silence to close",
     type: "number",
     unit: "ms",
-    min: 1000,
+    min: 5000,
     max: 120000,
     advanced: true,
     help:
@@ -98,7 +84,7 @@ const sessionFields: FieldMeta[] = [
     applied: true,
     label: "Voice threshold",
     type: "number",
-    min: 0,
+    min: 1,
     max: 32767,
     advanced: true,
     help:
@@ -106,7 +92,7 @@ const sessionFields: FieldMeta[] = [
   },
 ];
 
-// ── the three operating modes ─────────────────────────────────────────────────
+// ── the operating modes ─────────────────────────────────────────────────
 export const MODES: ModeMeta[] = [
   {
     id: "full_duplex",
@@ -138,7 +124,6 @@ export const MODES: ModeMeta[] = [
         help:
           "Where the fixed beam points. 0° = straight ahead of the array; positive = counter-clockwise. Aim it at where you sit: it improves pickup and helps the AEC converge.",
       },
-      micChannel,
       ...sessionFields,
     ],
   },
@@ -148,7 +133,7 @@ export const MODES: ModeMeta[] = [
     title: "Half-duplex",
     sub: "Turn-taking",
     blurb:
-      "You talk in turns; to interrupt while it speaks you say “Sebastián”. Far more immune to echo, noise and flaky networks.",
+      "You talk in turns; to interrupt while it speaks you say the wake word. Far more immune to echo, noise and flaky networks.",
     best: "Echoey/noisy rooms · congested 2.4 GHz",
     callout: {
       tone: "info",
@@ -163,10 +148,10 @@ export const MODES: ModeMeta[] = [
       {
         label: "Interrupt",
         value: "Wake word",
-        why: "Since the mic is muted while the agent speaks, you cut in by saying “Sebastián” (barge-in).",
+        why: "Since the mic is muted while the agent speaks, you cut in by saying the wake word (barge-in).",
       },
     ],
-    fields: [micChannel, ...sessionFields],
+    fields: [...sessionFields],
   },
 ];
 
@@ -192,52 +177,24 @@ export const SHARED: SharedGroup[] = [
         label: "Password",
         type: "password",
         applied: true,
-        help: "Stored in the device's NVS, never leaves it: after a load from the device the field is locked and the stored password is kept unless you press Cambiar. Empty = open network.",
-      },
-      {
-        path: "wifi.hidden",
-        label: "Hidden network",
-        type: "toggle",
-        advanced: true,
-        help: "Turn on if the SSID isn't broadcast. The device does a directed scan.",
+        help: "Stored in the device's NVS, not returned on load. An untouched field preserves the stored password; editing to empty selects an open network.",
       },
     ],
   },
   {
     id: "lk",
     icon: "cloud",
-    title: "LiveKit",
-    sub: "token + room",
+    title: "Session access",
+    sub: "your backend",
     fields: [
       {
-        path: "livekit.tokenServerUrl",
-        label: "Token server URL",
-        type: "url",
-        applied: true,
-        placeholder: "http://192.168.1.10:8787/token",
-        issuePath: "livekit.tokenServerUrl",
-        help: "Where the device fetches its per-session token, on the LAN. Must point at the machine running token_server.py.",
+        path: "livekit.tokenServerUrl", label: "Full session endpoint URL", type: "url", applied: true,
+        placeholder: "https://api.example.com/api/v2/device-voice-session", issuePath: "livekit.tokenServerUrl",
+        help: "Complete POST endpoint, including its path. The backend authenticates the device and creates the LiveKit room and token. The firmware does not append a path.",
       },
       {
-        path: "livekit.deviceIdentity",
-        label: "Device identity",
-        type: "text",
-        advanced: true,
-        help: "The name the device joins the room with. The agent waits for it to greet.",
-      },
-      {
-        path: "livekit.room",
-        label: "Room",
-        type: "text",
-        advanced: true,
-        help: "The LiveKit room where device and agent meet.",
-      },
-      {
-        path: "livekit.agentName",
-        label: "Agent",
-        type: "text",
-        advanced: true,
-        help: "The agent worker to dispatch when the device joins.",
+        path: "livekit.allowInsecureHttp", label: "Allow HTTP for local development", type: "toggle", applied: true,
+        help: "Off by default. Enable only for a trusted local development endpoint. HTTP sends the device credential without transport encryption.",
       },
     ],
   },
@@ -254,7 +211,7 @@ export const SHARED: SharedGroup[] = [
         applied: true,
         placeholder: "192.168.1.10",
         issuePath: "telemetry.syslogIp",
-        help: "Where the device ships its logs over UDP syslog (the telemetry bridge or Alloy). Empty = logs stay on the device.",
+        help: "Optional UDP syslog receiver. Empty keeps logs on the device.",
       },
       {
         path: "telemetry.syslogPort",
@@ -264,48 +221,7 @@ export const SHARED: SharedGroup[] = [
         min: 1,
         max: 65535,
         issuePath: "telemetry.syslogPort",
-        help: "UDP port of the syslog receiver. 514 unless the bridge says otherwise.",
-      },
-      {
-        path: "telemetry.otlpEndpoint",
-        label: "OTLP endpoint",
-        type: "url",
-        advanced: true,
-        placeholder: "https://otel.example.com",
-        issuePath: "telemetry.otlpEndpoint",
-        help: "Where the telemetry bridge ships metrics/logs. Empty = disabled.",
-      },
-      {
-        path: "telemetry.grafanaUrl",
-        label: "Grafana URL",
-        type: "url",
-        advanced: true,
-        placeholder: "https://grafana.example.com/d/sebastian-device",
-        issuePath: "telemetry.grafanaUrl",
-        help: "Informational only, to link to the device dashboard.",
-      },
-    ],
-  },
-  {
-    id: "adopt",
-    icon: "cloud",
-    title: "Control room",
-    sub: "adoption",
-    fields: [
-      {
-        path: "adoption.orgSecret",
-        label: "Organization secret",
-        type: "password",
-        applied: true,
-        help: "Lets any control room of your organization adopt this unit over the network without pressing MUTE. Pre-filled by an embedded installer; optional on the public one.",
-      },
-      {
-        path: "adoption.deviceSecret",
-        label: "Device secret",
-        type: "password",
-        applied: true,
-        advanced: true,
-        help: "Born with the unit and shown after Load from device: the key that hands this speaker to a control room of another organization. Leave it as loaded; typing a new one rotates it.",
+        help: "UDP port of the syslog receiver. Default 514.",
       },
     ],
   },

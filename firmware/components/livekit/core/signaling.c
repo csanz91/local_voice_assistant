@@ -194,23 +194,18 @@ static void on_ws_event(void *ctx, esp_event_base_t base, int32_t event_id, void
                 break;
             }
             if (data->data_len < 1) break;
-            livekit_pb_signal_response_t res = {};
-            if (!protocol_signal_response_decode((const uint8_t *)data->data_ptr, (size_t)data->data_len, &res)) {
+            /* Bounded participant attribute snapshots make this object too large
+             * for the WebSocket task stack. The engine takes heap ownership. */
+            livekit_pb_signal_response_t *res = calloc(1, sizeof(*res));
+            if (!res) break;
+            if (!protocol_signal_response_decode((const uint8_t *)data->data_ptr, (size_t)data->data_len, res)) {
+                free(res); /* nanopb releases partial pointer fields on failure. */
                 break;
             }
-            if (res.which_message == 0) {
-                // Response type is not supported yet.
-                protocol_signal_response_free(&res);
-                break;
-            }
-            if (!res_middleware(sg, &res)) {
-                // Don't forward.
-                protocol_signal_response_free(&res);
-                break;
-            }
-            if (!sg->options.on_res(&res, sg->options.ctx)) {
-                // Ownership was not taken.
-                protocol_signal_response_free(&res);
+            if (res->which_message == 0 || !res_middleware(sg, res) ||
+                !sg->options.on_res(res, sg->options.ctx)) {
+                protocol_signal_response_free(res);
+                free(res);
             }
             break;
         default:

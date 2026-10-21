@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../firmware/build"
 
-PORT="${1:-$(ls /dev/cu.usbmodem* /dev/ttyACM* /dev/ttyUSB* 2>/dev/null | head -1)}"
+PORT="${1:?pass the identified ESP32 serial port}"
 if [[ -z "${PORT}" ]]; then
     echo "Sin puerto serie (cu.usbmodem*/ttyACM*/ttyUSB*) — ¿está enchufado el device?" >&2
     exit 1
@@ -21,7 +21,7 @@ fi
 pkill -f tools/telemetry/bridge.py 2>/dev/null || true
 sleep 1
 
-uvx --from esptool esptool.py --chip esp32s3 -p "$PORT" -b 460800 \
+uvx --from "esptool==4.11.0" esptool.py --chip esp32s3 -p "$PORT" -b 460800 \
     --before default_reset --after hard_reset write_flash @flash_args
 
 echo "[flash] OK. Relanza el bridge: make bridge"

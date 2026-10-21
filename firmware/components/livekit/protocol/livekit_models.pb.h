@@ -4,6 +4,7 @@
 #ifndef PB_LIVEKIT_LIVEKIT_MODELS_PB_H_INCLUDED
 #define PB_LIVEKIT_LIVEKIT_MODELS_PB_H_INCLUDED
 #include <pb.h>
+#include "protocol_attributes.h"
 #include "timestamp.pb.h"
 #include "livekit_metrics.pb.h"
 
@@ -271,7 +272,13 @@ typedef struct livekit_pb_participant_info {
     char *name;
     livekit_pb_participant_permission_t permission;
     livekit_pb_participant_info_kind_t kind;
+    livekit_pb_attributes_t attributes;
 } livekit_pb_participant_info_t;
+
+typedef struct livekit_pb_participant_info_attributes_entry {
+    pb_callback_t key;
+    pb_callback_t value;
+} livekit_pb_participant_info_attributes_entry_t;
 
 typedef struct livekit_pb_encryption {
     char dummy_field;
@@ -293,7 +300,10 @@ typedef struct livekit_pb_simulcast_codec_info {
 typedef struct livekit_pb_track_info {
     char *sid;
     livekit_pb_track_type_t type;
+    char name[64];
     bool muted;
+    /* source of media */
+    livekit_pb_track_source_t source;
     /* mime type of codec */
     char *mime_type;
     pb_size_t audio_features_count;
@@ -596,6 +606,11 @@ typedef struct livekit_pb_data_stream_byte_header {
     char dummy_field;
 } livekit_pb_data_stream_byte_header_t;
 
+typedef struct livekit_pb_data_stream_header_attributes_entry {
+    char key[32];
+    char value[128];
+} livekit_pb_data_stream_header_attributes_entry_t;
+
 /* main DataStream.Header that contains a oneof for specific headers */
 typedef struct livekit_pb_data_stream_header {
     char stream_id[37]; /* unique identifier for this data stream */
@@ -603,6 +618,8 @@ typedef struct livekit_pb_data_stream_header {
     char *topic;
     bool has_total_length;
     uint64_t total_length; /* only populated for finite streams, if it's a stream of unknown size this stays empty */
+    pb_size_t attributes_count;
+    livekit_pb_data_stream_header_attributes_entry_t attributes[3]; /* user defined attributes map that can carry additional info */
     pb_size_t which_content_header;
     union {
         livekit_pb_data_stream_text_header_t text_header;
@@ -758,9 +775,11 @@ extern "C" {
 #define livekit_pb_participant_info_t_kind_ENUMTYPE livekit_pb_participant_info_kind_t
 
 
+
 #define livekit_pb_simulcast_codec_info_t_video_layer_mode_ENUMTYPE livekit_pb_video_layer_mode_t
 
 #define livekit_pb_track_info_t_type_ENUMTYPE livekit_pb_track_type_t
+#define livekit_pb_track_info_t_source_ENUMTYPE livekit_pb_track_source_t
 #define livekit_pb_track_info_t_audio_features_ENUMTYPE livekit_pb_audio_track_feature_t
 
 #define livekit_pb_video_layer_t_quality_ENUMTYPE livekit_pb_video_quality_t
@@ -808,6 +827,7 @@ extern "C" {
 
 
 
+
 /* Initializer values for message structs */
 #define LIVEKIT_PB_PAGINATION_INIT_DEFAULT       {{{NULL}, NULL}, 0}
 #define LIVEKIT_PB_TOKEN_PAGINATION_INIT_DEFAULT {{{NULL}, NULL}}
@@ -816,10 +836,11 @@ extern "C" {
 #define LIVEKIT_PB_CODEC_INIT_DEFAULT            {{{NULL}, NULL}, {{NULL}, NULL}}
 #define LIVEKIT_PB_PLAYOUT_DELAY_INIT_DEFAULT    {0, 0, 0}
 #define LIVEKIT_PB_PARTICIPANT_PERMISSION_INIT_DEFAULT {0, 0, 0}
-#define LIVEKIT_PB_PARTICIPANT_INFO_INIT_DEFAULT {"", NULL, _LIVEKIT_PB_PARTICIPANT_INFO_STATE_MIN, 0, NULL, NULL, NULL, LIVEKIT_PB_PARTICIPANT_PERMISSION_INIT_DEFAULT, _LIVEKIT_PB_PARTICIPANT_INFO_KIND_MIN}
+#define LIVEKIT_PB_PARTICIPANT_INFO_INIT_DEFAULT {"", NULL, _LIVEKIT_PB_PARTICIPANT_INFO_STATE_MIN, 0, NULL, NULL, NULL, LIVEKIT_PB_PARTICIPANT_PERMISSION_INIT_DEFAULT, _LIVEKIT_PB_PARTICIPANT_INFO_KIND_MIN, {0}}
+#define LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_INIT_DEFAULT {{{NULL}, NULL}, {{NULL}, NULL}}
 #define LIVEKIT_PB_ENCRYPTION_INIT_DEFAULT       {0}
 #define LIVEKIT_PB_SIMULCAST_CODEC_INFO_INIT_DEFAULT {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, _LIVEKIT_PB_VIDEO_LAYER_MODE_MIN, {{NULL}, NULL}}
-#define LIVEKIT_PB_TRACK_INFO_INIT_DEFAULT       {NULL, _LIVEKIT_PB_TRACK_TYPE_MIN, 0, NULL, 0, {_LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN}}
+#define LIVEKIT_PB_TRACK_INFO_INIT_DEFAULT       {NULL, _LIVEKIT_PB_TRACK_TYPE_MIN, "", 0, _LIVEKIT_PB_TRACK_SOURCE_MIN, NULL, 0, {_LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN}}
 #define LIVEKIT_PB_VIDEO_LAYER_INIT_DEFAULT      {_LIVEKIT_PB_VIDEO_QUALITY_MIN, 0, 0, 0}
 #define LIVEKIT_PB_DATA_PACKET_INIT_DEFAULT      {0, {LIVEKIT_PB_USER_PACKET_INIT_DEFAULT}, NULL, 0, NULL, 0, ""}
 #define LIVEKIT_PB_ENCRYPTED_PACKET_INIT_DEFAULT {_LIVEKIT_PB_ENCRYPTION_TYPE_MIN, {{NULL}, NULL}, 0, {{NULL}, NULL}}
@@ -851,7 +872,8 @@ extern "C" {
 #define LIVEKIT_PB_DATA_STREAM_INIT_DEFAULT      {0}
 #define LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_INIT_DEFAULT {0}
 #define LIVEKIT_PB_DATA_STREAM_BYTE_HEADER_INIT_DEFAULT {0}
-#define LIVEKIT_PB_DATA_STREAM_HEADER_INIT_DEFAULT {"", 0, NULL, false, 0, 0, {LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_INIT_DEFAULT}}
+#define LIVEKIT_PB_DATA_STREAM_HEADER_INIT_DEFAULT {"", 0, NULL, false, 0, 0, {LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_DEFAULT, LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_DEFAULT, LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_DEFAULT}, 0, {LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_INIT_DEFAULT}}
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_DEFAULT {"", ""}
 #define LIVEKIT_PB_DATA_STREAM_CHUNK_INIT_DEFAULT {"", 0, NULL, 0}
 #define LIVEKIT_PB_DATA_STREAM_TRAILER_INIT_DEFAULT {"", ""}
 #define LIVEKIT_PB_FILTER_PARAMS_INIT_DEFAULT    {{{NULL}, NULL}, {{NULL}, NULL}}
@@ -864,10 +886,11 @@ extern "C" {
 #define LIVEKIT_PB_CODEC_INIT_ZERO               {{{NULL}, NULL}, {{NULL}, NULL}}
 #define LIVEKIT_PB_PLAYOUT_DELAY_INIT_ZERO       {0, 0, 0}
 #define LIVEKIT_PB_PARTICIPANT_PERMISSION_INIT_ZERO {0, 0, 0}
-#define LIVEKIT_PB_PARTICIPANT_INFO_INIT_ZERO    {"", NULL, _LIVEKIT_PB_PARTICIPANT_INFO_STATE_MIN, 0, NULL, NULL, NULL, LIVEKIT_PB_PARTICIPANT_PERMISSION_INIT_ZERO, _LIVEKIT_PB_PARTICIPANT_INFO_KIND_MIN}
+#define LIVEKIT_PB_PARTICIPANT_INFO_INIT_ZERO    {"", NULL, _LIVEKIT_PB_PARTICIPANT_INFO_STATE_MIN, 0, NULL, NULL, NULL, LIVEKIT_PB_PARTICIPANT_PERMISSION_INIT_ZERO, _LIVEKIT_PB_PARTICIPANT_INFO_KIND_MIN, {0}}
+#define LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_INIT_ZERO {{{NULL}, NULL}, {{NULL}, NULL}}
 #define LIVEKIT_PB_ENCRYPTION_INIT_ZERO          {0}
 #define LIVEKIT_PB_SIMULCAST_CODEC_INFO_INIT_ZERO {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, _LIVEKIT_PB_VIDEO_LAYER_MODE_MIN, {{NULL}, NULL}}
-#define LIVEKIT_PB_TRACK_INFO_INIT_ZERO          {NULL, _LIVEKIT_PB_TRACK_TYPE_MIN, 0, NULL, 0, {_LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN}}
+#define LIVEKIT_PB_TRACK_INFO_INIT_ZERO          {NULL, _LIVEKIT_PB_TRACK_TYPE_MIN, "", 0, _LIVEKIT_PB_TRACK_SOURCE_MIN, NULL, 0, {_LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN, _LIVEKIT_PB_AUDIO_TRACK_FEATURE_MIN}}
 #define LIVEKIT_PB_VIDEO_LAYER_INIT_ZERO         {_LIVEKIT_PB_VIDEO_QUALITY_MIN, 0, 0, 0}
 #define LIVEKIT_PB_DATA_PACKET_INIT_ZERO         {0, {LIVEKIT_PB_USER_PACKET_INIT_ZERO}, NULL, 0, NULL, 0, ""}
 #define LIVEKIT_PB_ENCRYPTED_PACKET_INIT_ZERO    {_LIVEKIT_PB_ENCRYPTION_TYPE_MIN, {{NULL}, NULL}, 0, {{NULL}, NULL}}
@@ -899,7 +922,8 @@ extern "C" {
 #define LIVEKIT_PB_DATA_STREAM_INIT_ZERO         {0}
 #define LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_INIT_ZERO {0}
 #define LIVEKIT_PB_DATA_STREAM_BYTE_HEADER_INIT_ZERO {0}
-#define LIVEKIT_PB_DATA_STREAM_HEADER_INIT_ZERO  {"", 0, NULL, false, 0, 0, {LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_INIT_ZERO}}
+#define LIVEKIT_PB_DATA_STREAM_HEADER_INIT_ZERO  {"", 0, NULL, false, 0, 0, {LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_ZERO, LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_ZERO, LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_ZERO}, 0, {LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_INIT_ZERO}}
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_ZERO {"", ""}
 #define LIVEKIT_PB_DATA_STREAM_CHUNK_INIT_ZERO   {"", 0, NULL, 0}
 #define LIVEKIT_PB_DATA_STREAM_TRAILER_INIT_ZERO {"", ""}
 #define LIVEKIT_PB_FILTER_PARAMS_INIT_ZERO       {{{NULL}, NULL}, {{NULL}, NULL}}
@@ -935,6 +959,9 @@ extern "C" {
 #define LIVEKIT_PB_PARTICIPANT_INFO_NAME_TAG     9
 #define LIVEKIT_PB_PARTICIPANT_INFO_PERMISSION_TAG 11
 #define LIVEKIT_PB_PARTICIPANT_INFO_KIND_TAG     14
+#define LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_TAG 15
+#define LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_KEY_TAG 1
+#define LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_VALUE_TAG 2
 #define LIVEKIT_PB_SIMULCAST_CODEC_INFO_MIME_TYPE_TAG 1
 #define LIVEKIT_PB_SIMULCAST_CODEC_INFO_MID_TAG  2
 #define LIVEKIT_PB_SIMULCAST_CODEC_INFO_CID_TAG  3
@@ -943,7 +970,9 @@ extern "C" {
 #define LIVEKIT_PB_SIMULCAST_CODEC_INFO_SDP_CID_TAG 6
 #define LIVEKIT_PB_TRACK_INFO_SID_TAG            1
 #define LIVEKIT_PB_TRACK_INFO_TYPE_TAG           2
+#define LIVEKIT_PB_TRACK_INFO_NAME_TAG           3
 #define LIVEKIT_PB_TRACK_INFO_MUTED_TAG          4
+#define LIVEKIT_PB_TRACK_INFO_SOURCE_TAG         9
 #define LIVEKIT_PB_TRACK_INFO_MIME_TYPE_TAG      11
 #define LIVEKIT_PB_TRACK_INFO_AUDIO_FEATURES_TAG 19
 #define LIVEKIT_PB_VIDEO_LAYER_QUALITY_TAG       1
@@ -1104,10 +1133,13 @@ extern "C" {
 #define LIVEKIT_PB_RTP_FORWARDER_STATE_SENDER_REPORT_STATE_TAG 8
 #define LIVEKIT_PB_TIMED_VERSION_UNIX_MICRO_TAG  1
 #define LIVEKIT_PB_TIMED_VERSION_TICKS_TAG       2
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_KEY_TAG 1
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_VALUE_TAG 2
 #define LIVEKIT_PB_DATA_STREAM_HEADER_STREAM_ID_TAG 1
 #define LIVEKIT_PB_DATA_STREAM_HEADER_TIMESTAMP_TAG 2
 #define LIVEKIT_PB_DATA_STREAM_HEADER_TOPIC_TAG  3
 #define LIVEKIT_PB_DATA_STREAM_HEADER_TOTAL_LENGTH_TAG 5
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_TAG 8
 #define LIVEKIT_PB_DATA_STREAM_HEADER_TEXT_HEADER_TAG 9
 #define LIVEKIT_PB_DATA_STREAM_HEADER_BYTE_HEADER_TAG 10
 #define LIVEKIT_PB_DATA_STREAM_CHUNK_STREAM_ID_TAG 1
@@ -1189,11 +1221,20 @@ X(a, POINTER,  REPEATED, MESSAGE,  tracks,            4) \
 X(a, POINTER,  SINGULAR, STRING,   metadata,          5) \
 X(a, POINTER,  SINGULAR, STRING,   name,              9) \
 X(a, STATIC,   REQUIRED, MESSAGE,  permission,       11) \
-X(a, STATIC,   SINGULAR, UENUM,    kind,             14)
-#define LIVEKIT_PB_PARTICIPANT_INFO_CALLBACK NULL
+X(a, STATIC,   SINGULAR, UENUM,    kind,             14) \
+X(a, CALLBACK, REPEATED, MESSAGE,  attributes,       15)
+extern bool livekit_pb_attributes_callback(pb_istream_t *istream, pb_ostream_t *ostream, const pb_field_t *field);
+#define LIVEKIT_PB_PARTICIPANT_INFO_CALLBACK livekit_pb_attributes_callback
 #define LIVEKIT_PB_PARTICIPANT_INFO_DEFAULT NULL
 #define livekit_pb_participant_info_t_tracks_MSGTYPE livekit_pb_track_info_t
 #define livekit_pb_participant_info_t_permission_MSGTYPE livekit_pb_participant_permission_t
+#define livekit_pb_participant_info_t_attributes_MSGTYPE livekit_pb_participant_info_attributes_entry_t
+
+#define LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_FIELDLIST(X, a) \
+X(a, CALLBACK, SINGULAR, STRING,   key,               1) \
+X(a, CALLBACK, SINGULAR, STRING,   value,             2)
+#define LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_CALLBACK pb_default_field_callback
+#define LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_DEFAULT NULL
 
 #define LIVEKIT_PB_ENCRYPTION_FIELDLIST(X, a) \
 
@@ -1214,7 +1255,9 @@ X(a, CALLBACK, SINGULAR, STRING,   sdp_cid,           6)
 #define LIVEKIT_PB_TRACK_INFO_FIELDLIST(X, a) \
 X(a, POINTER,  SINGULAR, STRING,   sid,               1) \
 X(a, STATIC,   SINGULAR, UENUM,    type,              2) \
+X(a, STATIC,   SINGULAR, STRING,   name,              3) \
 X(a, STATIC,   SINGULAR, BOOL,     muted,             4) \
+X(a, STATIC,   SINGULAR, UENUM,    source,            9) \
 X(a, POINTER,  SINGULAR, STRING,   mime_type,        11) \
 X(a, STATIC,   REPEATED, UENUM,    audio_features,   19)
 #define LIVEKIT_PB_TRACK_INFO_CALLBACK NULL
@@ -1553,12 +1596,20 @@ X(a, STATIC,   SINGULAR, STRING,   stream_id,         1) \
 X(a, STATIC,   SINGULAR, INT64,    timestamp,         2) \
 X(a, POINTER,  SINGULAR, STRING,   topic,             3) \
 X(a, STATIC,   OPTIONAL, UINT64,   total_length,      5) \
+X(a, STATIC,   REPEATED, MESSAGE,  attributes,        8) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (content_header,text_header,content_header.text_header),   9) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (content_header,byte_header,content_header.byte_header),  10)
 #define LIVEKIT_PB_DATA_STREAM_HEADER_CALLBACK NULL
 #define LIVEKIT_PB_DATA_STREAM_HEADER_DEFAULT NULL
+#define livekit_pb_data_stream_header_t_attributes_MSGTYPE livekit_pb_data_stream_header_attributes_entry_t
 #define livekit_pb_data_stream_header_t_content_header_text_header_MSGTYPE livekit_pb_data_stream_text_header_t
 #define livekit_pb_data_stream_header_t_content_header_byte_header_MSGTYPE livekit_pb_data_stream_byte_header_t
+
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, STRING,   key,               1) \
+X(a, STATIC,   SINGULAR, STRING,   value,             2)
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_CALLBACK NULL
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_DEFAULT NULL
 
 #define LIVEKIT_PB_DATA_STREAM_CHUNK_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   stream_id,         1) \
@@ -1602,6 +1653,7 @@ extern const pb_msgdesc_t livekit_pb_codec_t_msg;
 extern const pb_msgdesc_t livekit_pb_playout_delay_t_msg;
 extern const pb_msgdesc_t livekit_pb_participant_permission_t_msg;
 extern const pb_msgdesc_t livekit_pb_participant_info_t_msg;
+extern const pb_msgdesc_t livekit_pb_participant_info_attributes_entry_t_msg;
 extern const pb_msgdesc_t livekit_pb_encryption_t_msg;
 extern const pb_msgdesc_t livekit_pb_simulcast_codec_info_t_msg;
 extern const pb_msgdesc_t livekit_pb_track_info_t_msg;
@@ -1637,6 +1689,7 @@ extern const pb_msgdesc_t livekit_pb_data_stream_t_msg;
 extern const pb_msgdesc_t livekit_pb_data_stream_text_header_t_msg;
 extern const pb_msgdesc_t livekit_pb_data_stream_byte_header_t_msg;
 extern const pb_msgdesc_t livekit_pb_data_stream_header_t_msg;
+extern const pb_msgdesc_t livekit_pb_data_stream_header_attributes_entry_t_msg;
 extern const pb_msgdesc_t livekit_pb_data_stream_chunk_t_msg;
 extern const pb_msgdesc_t livekit_pb_data_stream_trailer_t_msg;
 extern const pb_msgdesc_t livekit_pb_filter_params_t_msg;
@@ -1652,6 +1705,7 @@ extern const pb_msgdesc_t livekit_pb_subscribed_audio_codec_t_msg;
 #define LIVEKIT_PB_PLAYOUT_DELAY_FIELDS &livekit_pb_playout_delay_t_msg
 #define LIVEKIT_PB_PARTICIPANT_PERMISSION_FIELDS &livekit_pb_participant_permission_t_msg
 #define LIVEKIT_PB_PARTICIPANT_INFO_FIELDS &livekit_pb_participant_info_t_msg
+#define LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_FIELDS &livekit_pb_participant_info_attributes_entry_t_msg
 #define LIVEKIT_PB_ENCRYPTION_FIELDS &livekit_pb_encryption_t_msg
 #define LIVEKIT_PB_SIMULCAST_CODEC_INFO_FIELDS &livekit_pb_simulcast_codec_info_t_msg
 #define LIVEKIT_PB_TRACK_INFO_FIELDS &livekit_pb_track_info_t_msg
@@ -1687,6 +1741,7 @@ extern const pb_msgdesc_t livekit_pb_subscribed_audio_codec_t_msg;
 #define LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_FIELDS &livekit_pb_data_stream_text_header_t_msg
 #define LIVEKIT_PB_DATA_STREAM_BYTE_HEADER_FIELDS &livekit_pb_data_stream_byte_header_t_msg
 #define LIVEKIT_PB_DATA_STREAM_HEADER_FIELDS &livekit_pb_data_stream_header_t_msg
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_FIELDS &livekit_pb_data_stream_header_attributes_entry_t_msg
 #define LIVEKIT_PB_DATA_STREAM_CHUNK_FIELDS &livekit_pb_data_stream_chunk_t_msg
 #define LIVEKIT_PB_DATA_STREAM_TRAILER_FIELDS &livekit_pb_data_stream_trailer_t_msg
 #define LIVEKIT_PB_FILTER_PARAMS_FIELDS &livekit_pb_filter_params_t_msg
@@ -1700,6 +1755,7 @@ extern const pb_msgdesc_t livekit_pb_subscribed_audio_codec_t_msg;
 /* livekit_pb_Room_size depends on runtime parameters */
 /* livekit_pb_Codec_size depends on runtime parameters */
 /* livekit_pb_ParticipantInfo_size depends on runtime parameters */
+/* livekit_pb_ParticipantInfo_AttributesEntry_size depends on runtime parameters */
 /* livekit_pb_SimulcastCodecInfo_size depends on runtime parameters */
 /* livekit_pb_TrackInfo_size depends on runtime parameters */
 /* livekit_pb_DataPacket_size depends on runtime parameters */
@@ -1723,10 +1779,11 @@ extern const pb_msgdesc_t livekit_pb_subscribed_audio_codec_t_msg;
 /* livekit_pb_FilterParams_size depends on runtime parameters */
 /* livekit_pb_WebhookConfig_size depends on runtime parameters */
 /* livekit_pb_SubscribedAudioCodec_size depends on runtime parameters */
-#define LIVEKIT_LIVEKIT_MODELS_PB_H_MAX_SIZE     LIVEKIT_PB_RTP_DRIFT_SIZE
+#define LIVEKIT_LIVEKIT_MODELS_PB_H_MAX_SIZE     LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_SIZE
 #define LIVEKIT_PB_CLIENT_CONFIGURATION_SIZE     4
 #define LIVEKIT_PB_CLIENT_INFO_SIZE              57
 #define LIVEKIT_PB_DATA_STREAM_BYTE_HEADER_SIZE  0
+#define LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_SIZE 163
 #define LIVEKIT_PB_DATA_STREAM_SIZE              0
 #define LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_SIZE  0
 #define LIVEKIT_PB_DATA_STREAM_TRAILER_SIZE      55
@@ -1893,6 +1950,7 @@ extern const pb_msgdesc_t livekit_pb_subscribed_audio_codec_t_msg;
 #define LIVEKIT_PLAYOUT_DELAY_INIT_DEFAULT LIVEKIT_PB_PLAYOUT_DELAY_INIT_DEFAULT
 #define LIVEKIT_PARTICIPANT_PERMISSION_INIT_DEFAULT LIVEKIT_PB_PARTICIPANT_PERMISSION_INIT_DEFAULT
 #define LIVEKIT_PARTICIPANT_INFO_INIT_DEFAULT LIVEKIT_PB_PARTICIPANT_INFO_INIT_DEFAULT
+#define LIVEKIT_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_INIT_DEFAULT LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_INIT_DEFAULT
 #define LIVEKIT_ENCRYPTION_INIT_DEFAULT LIVEKIT_PB_ENCRYPTION_INIT_DEFAULT
 #define LIVEKIT_SIMULCAST_CODEC_INFO_INIT_DEFAULT LIVEKIT_PB_SIMULCAST_CODEC_INFO_INIT_DEFAULT
 #define LIVEKIT_TRACK_INFO_INIT_DEFAULT LIVEKIT_PB_TRACK_INFO_INIT_DEFAULT
@@ -1928,6 +1986,7 @@ extern const pb_msgdesc_t livekit_pb_subscribed_audio_codec_t_msg;
 #define LIVEKIT_DATA_STREAM_TEXT_HEADER_INIT_DEFAULT LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_INIT_DEFAULT
 #define LIVEKIT_DATA_STREAM_BYTE_HEADER_INIT_DEFAULT LIVEKIT_PB_DATA_STREAM_BYTE_HEADER_INIT_DEFAULT
 #define LIVEKIT_DATA_STREAM_HEADER_INIT_DEFAULT LIVEKIT_PB_DATA_STREAM_HEADER_INIT_DEFAULT
+#define LIVEKIT_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_DEFAULT LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_DEFAULT
 #define LIVEKIT_DATA_STREAM_CHUNK_INIT_DEFAULT LIVEKIT_PB_DATA_STREAM_CHUNK_INIT_DEFAULT
 #define LIVEKIT_DATA_STREAM_TRAILER_INIT_DEFAULT LIVEKIT_PB_DATA_STREAM_TRAILER_INIT_DEFAULT
 #define LIVEKIT_FILTER_PARAMS_INIT_DEFAULT LIVEKIT_PB_FILTER_PARAMS_INIT_DEFAULT
@@ -1941,6 +2000,7 @@ extern const pb_msgdesc_t livekit_pb_subscribed_audio_codec_t_msg;
 #define LIVEKIT_PLAYOUT_DELAY_INIT_ZERO LIVEKIT_PB_PLAYOUT_DELAY_INIT_ZERO
 #define LIVEKIT_PARTICIPANT_PERMISSION_INIT_ZERO LIVEKIT_PB_PARTICIPANT_PERMISSION_INIT_ZERO
 #define LIVEKIT_PARTICIPANT_INFO_INIT_ZERO LIVEKIT_PB_PARTICIPANT_INFO_INIT_ZERO
+#define LIVEKIT_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_INIT_ZERO LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY_INIT_ZERO
 #define LIVEKIT_ENCRYPTION_INIT_ZERO LIVEKIT_PB_ENCRYPTION_INIT_ZERO
 #define LIVEKIT_SIMULCAST_CODEC_INFO_INIT_ZERO LIVEKIT_PB_SIMULCAST_CODEC_INFO_INIT_ZERO
 #define LIVEKIT_TRACK_INFO_INIT_ZERO LIVEKIT_PB_TRACK_INFO_INIT_ZERO
@@ -1976,6 +2036,7 @@ extern const pb_msgdesc_t livekit_pb_subscribed_audio_codec_t_msg;
 #define LIVEKIT_DATA_STREAM_TEXT_HEADER_INIT_ZERO LIVEKIT_PB_DATA_STREAM_TEXT_HEADER_INIT_ZERO
 #define LIVEKIT_DATA_STREAM_BYTE_HEADER_INIT_ZERO LIVEKIT_PB_DATA_STREAM_BYTE_HEADER_INIT_ZERO
 #define LIVEKIT_DATA_STREAM_HEADER_INIT_ZERO LIVEKIT_PB_DATA_STREAM_HEADER_INIT_ZERO
+#define LIVEKIT_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_ZERO LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY_INIT_ZERO
 #define LIVEKIT_DATA_STREAM_CHUNK_INIT_ZERO LIVEKIT_PB_DATA_STREAM_CHUNK_INIT_ZERO
 #define LIVEKIT_DATA_STREAM_TRAILER_INIT_ZERO LIVEKIT_PB_DATA_STREAM_TRAILER_INIT_ZERO
 #define LIVEKIT_FILTER_PARAMS_INIT_ZERO LIVEKIT_PB_FILTER_PARAMS_INIT_ZERO

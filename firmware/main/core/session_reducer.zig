@@ -10,12 +10,8 @@
 //! executes the returned actions against the C SDK. No I/O here, so a field
 //! incident's event sequence pastes straight into core_test.zig.
 //!
-//! Deliberate deviations from the old poll loop, both ≤ one tick: a
-//! data-channel "close" ends the session the moment the event is consumed
-//! instead of at the next 10ms tick, and a handoff whose initial pre-roll send
-//! fails on a tick ≡ 0 (mod 50) no longer gets the old accidental same-tick
-//! retry (the first retry waits for the next cadence slot). Everything else —
-//! observation order, close priority, retry cadence — is a 1:1 port.
+//! Native pre-roll is a single handoff after both microphone SID and the
+//! authenticated agent's roomio_audio publication. Later wakes use live input.
 
 const session_core = @import("session_core.zig");
 
@@ -27,18 +23,14 @@ pub var voice_level: u32 = VOICE_LEVEL;
 pub const AGENT_AUDIO_LEVEL: u32 = 1000;
 pub const AEC_LOG_PERIOD_TICKS: u32 = 500;
 pub const AEC_LOG_OFFSET_TICKS: u32 = 250;
-pub const PREROLL_RETRY_TICKS: u32 = 50; // 500ms between pre-roll send retries
-pub const PREROLL_MAX_ATTEMPTS: u32 = 8; // ~4s of retries before giving up
 
 /// livekit_room_get_state classified by the shell each tick. The connection is
 /// still POLLED (not event-driven): the vendored SDK's on_state_changed has
 /// missed transitions before (#186 family), the poll is the source of truth.
 pub const Connection = enum { connecting, connected, ended };
 
-/// sebastian.agent_state data channel, classified by the shell. Any payload
-/// that is not one of the special strings maps to .quiet (matches the old
-/// callback: only exactly "speaking" raised the half-duplex gate).
-pub const AgentState = enum { speaking, quiet, interrupted, close };
+/// Standard lk.agent.state classified from the pinned participant attributes.
+pub const AgentState = enum { speaking, quiet, thinking, interrupted, close };
 
 pub const CloseReason = enum { disconnected, agent_close, silence, max_duration };
 
@@ -55,10 +47,13 @@ pub const Tick = struct {
 
 pub const Event = union(enum) {
     tick: Tick,
+    local_wake,
+    wake_result: struct { sequence: u32, accepted: bool },
     agent_state: AgentState,
-    /// Agent participant became active/inactive (on_participant_info).
+    /// Pinned agent published the standard roomio_audio output track.
     agent_active: bool,
-    /// Result of the pre-roll send the shell just executed (initial or retry).
+    mic_published: bool,
+    /// Result of the only native pre-roll send for this local microphone SID.
     preroll_sent: bool,
 };
 
@@ -73,12 +68,11 @@ pub const AecLog = struct {
 pub const Actions = struct {
     /// First CONNECTED tick: xvf_ui.setState(.active).
     ui_active: bool = false,
-    /// Room connected AND agent active: stop wakeword, mic_src.setLive(true),
-    /// send the pre-roll, then feed back .preroll_sent with the result.
+    ui_state: ?AgentState = null,
+    /// Connected + roomio publication + local mic SID: stop wake capture,
+    /// send native pre-roll, start the live microphone, report the result.
     handoff: bool = false,
-    /// Re-send the pre-roll, then feed back .preroll_sent with the result.
-    retry_preroll: bool = false,
-    /// Wake word heard over agent speech: publish sebastian.barge_in.
+    /// Wake word heard over agent speech: publish reliable request-correlated wake control.
     publish_barge: bool = false,
     /// mic_src.setAgentSpeaking — the half-duplex gate.
     mic_gate: ?bool = null,
@@ -91,9 +85,7 @@ pub const Actions = struct {
 pub const Preroll = enum {
     /// Not attempted yet, or already delivered — nothing pending either way.
     idle,
-    /// A send failed; retry on the PREROLL_RETRY_TICKS cadence.
-    pending,
-    /// PREROLL_MAX_ATTEMPTS retries failed; stop trying this session.
+    /// The single native stream attempt failed; continue on normal mic input.
     given_up,
 };
 
@@ -112,9 +104,9 @@ pub const State = struct {
     phase: Phase = .connecting,
     timing: session_core.Timing = .{},
     agent_ready: bool = false,
+    mic_published: bool = false,
     agent_speaking: bool = false,
     preroll: Preroll = .idle,
-    preroll_attempts: u32 = 0,
     // Diagnostics accumulated between AEC log windows.
     render_peak_window: u32 = 0,
     echo_window: u32 = 0,
@@ -123,10 +115,20 @@ pub const State = struct {
     pub fn step(self: *State, event: Event) Actions {
         if (self.phase == .done) return .{};
         switch (event) {
+            .wake_result => return .{},
             .tick => |t| return self.stepTick(t),
+            .local_wake => {
+                self.agent_speaking = false;
+                self.timing.markVoiceActivity();
+                return .{ .publish_barge = true, .flush_render = true, .mic_gate = false };
+            },
             .agent_state => |s| return self.stepAgentState(s),
             .agent_active => |active| {
                 self.agent_ready = active;
+                return .{};
+            },
+            .mic_published => |ready| {
+                self.mic_published = ready;
                 return .{};
             },
             .preroll_sent => |ok| {
@@ -138,9 +140,9 @@ pub const State = struct {
 
     fn stepAgentState(self: *State, s: AgentState) Actions {
         switch (s) {
-            .speaking, .quiet => {
+            .speaking, .quiet, .thinking => {
                 self.agent_speaking = (s == .speaking);
-                return .{ .mic_gate = self.agent_speaking };
+                return .{ .mic_gate = self.agent_speaking, .ui_state = s };
             },
             .interrupted => {
                 // Not user activity: the silence timer keeps running from the
@@ -181,6 +183,7 @@ pub const State = struct {
             self.agent_speaking = false;
             self.timing.markVoiceActivity(); // the user is about to talk
             out.publish_barge = true;
+            out.flush_render = true;
         }
 
         if (self.timing.tick % AEC_LOG_PERIOD_TICKS == AEC_LOG_OFFSET_TICKS) {
@@ -199,15 +202,9 @@ pub const State = struct {
             self.phase = .waiting_agent;
             out.ui_active = true;
         }
-        if (self.phase == .waiting_agent and t.connection == .connected and self.agent_ready) {
+        if (self.phase == .waiting_agent and t.connection == .connected and self.agent_ready and self.mic_published) {
             self.phase = .live;
             out.handoff = true;
-        }
-        if (self.phase == .live and self.preroll == .pending and
-            self.timing.tick % PREROLL_RETRY_TICKS == 0)
-        {
-            self.preroll_attempts += 1;
-            out.retry_preroll = true;
         }
 
         // Close decisions, in the original priority order. Timing.tick is only
@@ -230,9 +227,8 @@ pub const State = struct {
             self.preroll = .idle;
             return;
         }
-        self.preroll = if (self.preroll_attempts >= PREROLL_MAX_ATTEMPTS)
-            .given_up
-        else
-            .pending;
+        // Native RoomIO consumes one stream per SID. A partial send must never
+        // be retried as a second handoff; continue with the normal microphone.
+        self.preroll = .given_up;
     }
 };

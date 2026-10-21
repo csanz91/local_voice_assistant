@@ -20,22 +20,20 @@ que una prueba de un módulo puro no puede detectar.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `app.zig` | Arranque, perfiles, conversación, reuniones, handoff de audio y watchdog. |
+| `app.zig` | Arranque, perfiles, conversación, handoff de audio y watchdog. |
 | `board.zig` | I2C, AIC3104, I2S RX/TX separados y dispositivos codec. |
 | `xvf_dfu.zig` | Control I2C serializado, versión/DFU del XVF, mute y LEDs. |
 | `xvf_aec.zig` | Configuración con lectura de comprobación y probes acústicos. |
 | `mic_src.zig` / `xvf_pcm.zig` | Captura acompasada al consumidor y conversión de muestras. |
 | `wakeword.zig` / `components/mww` | Modelo Okay Nabu, frontend, FIR y detección local. |
-| `pre_roll.zig` | Audio previo a la activación en PSRAM y envío SBPR limitado. |
+| `pre_roll.zig` | Audio previo a la activación en PSRAM y envío PCM nativo limitado. |
 | `profile.zig` / `profiles.c` | Perfiles NVS, selector y contabilidad de fallos de arranque. |
 | `usb_mic.zig` | Micrófono TinyUSB UAC2 y convivencia con el agente. |
-| `token.zig` / `session_http.c` | Sesiones autenticadas e intercambios HTTP con Go. |
-| `control.zig` | Sondeo, configuración deseada, reporte de configuración y órdenes de reunión. |
-| `adopt.c` / `announce.c` | Adopción firmada UDP y anuncio mDNS. |
+| `token.zig` / `session_http.c` | Sesiones autenticadas contra el endpoint completo configurado. |
 | `provisioning.c` | Lectura/escritura de configuración, NVS y conexión/reversión WiFi. |
-| `xvf_ui.zig` | Anillo, consentimiento, estados y gestos del botón. |
+| `xvf_ui.zig` | Anillo de estados y mute físico. |
 | `log.zig` / `syslog_sink.c` / `coredump_report.c` | Logs, syslog y diagnóstico de pánicos. |
-| `core/` | Lógica pura de sesión, compuerta, perfiles, arbitraje USB, gestos y DSP. |
+| `core/` | Lógica pura de sesión, compuerta, perfiles, arbitraje USB y DSP. |
 
 ## Arranque y modos
 
@@ -44,11 +42,9 @@ configuración y abre la ventana serie antes de que TinyUSB reclame el USB.
 Una lectura de configuración prolonga esa ventana. Después ejecuta el perfil
 `agente` o `micro-usb`.
 
-En agente se construye el recorrido de audio, se conecta WiFi, se activa syslog
-si está configurado y se inicia el control por red. El modelo y el anillo de
-pre-roll quedan preparados para el ciclo de activación. Una orden de reunión
-abre su recorrido específico. Un fallo de arranque del agente permite conservar
-el servicio de micrófono USB.
+En agente se construye el recorrido de audio, se conecta WiFi y se activa syslog
+si está configurado. El modelo y el pre-roll quedan preparados para activación.
+El perfil USB funciona sin sesiones ni agente remoto.
 
 La contabilidad de arranques puede seleccionar un perfil agente de recuperación
 en memoria tras tres fallos; no sobrescribe la preferencia guardada. Esto no es
@@ -76,14 +72,16 @@ los pánicos investigados en septiembre.
 
 ## Configuración y credenciales
 
-El instalador envía `sebastian.config.v1`; el firmware valida, guarda en NVS y
-reinicia. `sebastian.config.get` devuelve la configuración existente sin la
-contraseña WiFi. La unidad genera su secreto y lo comparte con el control room
-al adoptar; no lleva claves API de LiveKit ni de modelos.
+El instalador envía `sebastian.config.v1`; el firmware guarda en NVS y reinicia.
+`sebastian.config.get` devuelve la configuración sin contraseña WiFi, y permite
+leer por USB el ID MAC y la credencial configurada. La credencial de voz la emite
+el propietario desde IoTCloud y caduca a los 90 días; no se genera localmente.
 
-`tokenServerUrl` conserva su nombre histórico. Se deriva su origen para llamar a
-`POST /v1/sessions` con `X-Device-Id` y `X-Device-Secret`. El recorrido legado
-`token_http.c` se retiró. Ver [protocolo de aprovisionamiento](../web-installer/public/PROVISIONING.md).
+`livekit.tokenServerUrl` conserva su nombre y clave NVS históricos, pero ahora
+contiene el endpoint completo HTTPS. POST usa `Authorization: Bearer`,
+sin autoridad de usuario/modelo. HTTPS/WSS validan el bundle raíz de IDF. HTTP/WS
+solo se permiten con `livekit.allowInsecureHttp: true` explícito para desarrollo.
+Ver [protocolo](PROTOCOL.md) y [aprovisionamiento](../web-installer/public/PROVISIONING.md).
 
 ## Pruebas, build y flasheo
 
@@ -97,7 +95,7 @@ make fw-build
 En el host macOS, desde la raíz del worktree:
 
 ```bash
-make flash
+PORT=<identified-port> make flash
 ```
 
 [BUILD_AND_RUN.md](BUILD_AND_RUN.md) cubre recuperación USB y conversión de

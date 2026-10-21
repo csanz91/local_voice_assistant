@@ -27,6 +27,13 @@
 extern "C" {
 #endif
 
+/// Bounded string attribute. Input strings are borrowed for the open() call only.
+/// Callback strings and arrays are borrowed only until that callback returns.
+typedef struct { const char *key; const char *value; } livekit_attribute_t;
+#define LIVEKIT_DATA_STREAM_ATTRIBUTES_MAX 3
+#define LIVEKIT_DATA_STREAM_ATTRIBUTE_KEY_MAX 31
+#define LIVEKIT_DATA_STREAM_ATTRIBUTE_VALUE_MAX 127
+
 /// Opaque handle to an open outgoing data stream.
 /// @ingroup DataStreams
 typedef void *livekit_data_stream_handle_t;
@@ -42,6 +49,8 @@ typedef struct {
     bool has_total_length;
     /// True if this is a text stream (UTF-8 chunks), false if byte stream (raw binary).
     bool is_text;
+    const livekit_attribute_t *attributes;
+    size_t attributes_count;
 } livekit_data_stream_header_t;
 
 /// A received chunk of data stream content.
@@ -87,6 +96,9 @@ typedef struct {
     uint64_t total_length;
     /// Whether total_length is set.
     bool has_total_length;
+    /// At most three attributes; overlength strings are rejected, never truncated.
+    const livekit_attribute_t *attributes;
+    size_t attributes_count;
 } livekit_data_stream_options_t;
 
 /// Handler for incoming data streams on a topic.

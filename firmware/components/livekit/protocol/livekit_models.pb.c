@@ -30,6 +30,9 @@ PB_BIND(LIVEKIT_PB_PARTICIPANT_PERMISSION, livekit_pb_participant_permission_t, 
 PB_BIND(LIVEKIT_PB_PARTICIPANT_INFO, livekit_pb_participant_info_t, AUTO)
 
 
+PB_BIND(LIVEKIT_PB_PARTICIPANT_INFO_ATTRIBUTES_ENTRY, livekit_pb_participant_info_attributes_entry_t, AUTO)
+
+
 PB_BIND(LIVEKIT_PB_ENCRYPTION, livekit_pb_encryption_t, AUTO)
 
 
@@ -48,7 +51,7 @@ PB_BIND(LIVEKIT_PB_DATA_PACKET, livekit_pb_data_packet_t, AUTO)
 PB_BIND(LIVEKIT_PB_ENCRYPTED_PACKET, livekit_pb_encrypted_packet_t, AUTO)
 
 
-PB_BIND(LIVEKIT_PB_ENCRYPTED_PACKET_PAYLOAD, livekit_pb_encrypted_packet_payload_t, AUTO)
+PB_BIND(LIVEKIT_PB_ENCRYPTED_PACKET_PAYLOAD, livekit_pb_encrypted_packet_payload_t, 2)
 
 
 PB_BIND(LIVEKIT_PB_SPEAKER_INFO, livekit_pb_speaker_info_t, AUTO)
@@ -132,7 +135,10 @@ PB_BIND(LIVEKIT_PB_DATA_STREAM_TEXT_HEADER, livekit_pb_data_stream_text_header_t
 PB_BIND(LIVEKIT_PB_DATA_STREAM_BYTE_HEADER, livekit_pb_data_stream_byte_header_t, AUTO)
 
 
-PB_BIND(LIVEKIT_PB_DATA_STREAM_HEADER, livekit_pb_data_stream_header_t, AUTO)
+PB_BIND(LIVEKIT_PB_DATA_STREAM_HEADER, livekit_pb_data_stream_header_t, 2)
+
+
+PB_BIND(LIVEKIT_PB_DATA_STREAM_HEADER_ATTRIBUTES_ENTRY, livekit_pb_data_stream_header_attributes_entry_t, AUTO)
 
 
 PB_BIND(LIVEKIT_PB_DATA_STREAM_CHUNK, livekit_pb_data_stream_chunk_t, AUTO)

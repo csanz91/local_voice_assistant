@@ -1,6 +1,6 @@
 {
   "name": "Sebastian",
-  "version": "94f684a-dirty",
+  "version": "local",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,8 +9,16 @@
       "improv": false,
       "parts": [
         {
-          "path": "firmware/sebastian-esp32s3-merged.bin",
+          "path": "firmware/bootloader.bin",
           "offset": 0
+        },
+        {
+          "path": "firmware/partition-table.bin",
+          "offset": 32768
+        },
+        {
+          "path": "firmware/sebastian.bin",
+          "offset": 65536
         }
       ]
     }

@@ -16,7 +16,6 @@
 
 const std = @import("std");
 const board = @import("board.zig");
-const control = @import("control.zig");
 const mic_src = @import("mic_src.zig");
 const profile = @import("profile.zig");
 const xvf_ui = @import("xvf_ui.zig");
@@ -130,7 +129,7 @@ fn setVolumeCb(volume: u32, _: ?*anyopaque) callconv(.c) void {
 }
 
 // ── Network side (F3/F4) ─────────────────────────────────────────────────────
-// Audio rides USB; WiFi here is telemetry + control plane only. The agent's
+// Audio rides USB; WiFi here is optional telemetry only. The agent's
 // hard rule (WIFI_PS_NONE for real-time audio) does not apply — modem sleep
 // stays on. The capture-health counters that the agent drains per session
 // window land in Grafana on a fixed tick instead, so a degraded desk mic is
@@ -152,14 +151,13 @@ fn telemetryTask(_: ?*anyopaque) callconv(.c) void {
 
 fn startNetwork() void {
     if (!c.sebastian_net_connect()) {
-        log.warn("wifi unavailable — mic keeps working offline, control plane off", .{});
+        log.warn("wifi unavailable — mic keeps working offline, syslog off", .{});
         return;
     }
     _ = c.esp_wifi_set_ps(c.WIFI_PS_MIN_MODEM);
     c.sebastian_syslog_start();
     _ = c.xTaskCreatePinnedToCore(telemetryTask, "usb_telemetry", 2048, null, 2, null, 0);
-    control.start();
-    log.info("network up: telemetry + control-plane poll active", .{});
+    log.info("network up: telemetry + optional syslog active", .{});
 }
 
 /// Initialize the TinyUSB UAC device. Called from the COMMON boot path in

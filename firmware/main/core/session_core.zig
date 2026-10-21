@@ -10,7 +10,7 @@
 pub const TICK_MS: u32 = 10;
 pub const MIN_ACTIVE_TICKS: u32 = 20 * 1000 / TICK_MS; // don't close in the first 20s
 // Watchdog, not the primary close: the agent ends idle conversations first
-// (data-channel "close", agent/endpointing.py — it sees transcribed turns and
+// (data-channel "close" from the external agent, which sees transcribed turns and
 // context, not amplitude). This only fires when the agent is dead or mute.
 pub const SILENCE_TICKS: u32 = 60 * 1000 / TICK_MS;
 /// Runtime value (config.zig::load overrides it from NVS); SILENCE_TICKS is the default.
