@@ -1525,3 +1525,17 @@ test "wake transport failures remain distinct from protected speech" {
     try std.testing.expectEqual(@as(u32, 77), snapshot.failed_sequence);
     try std.testing.expectEqual(@as(u32, 0), snapshot.rejected_sequence);
 }
+
+test "speaker drain: waits the minimum even when the speaker is already silent" {
+    try std.testing.expect(!session.speakerDrained(session.DRAIN_MIN_MS - session.DRAIN_STEP_MS, false));
+    try std.testing.expect(session.speakerDrained(session.DRAIN_MIN_MS, false));
+}
+
+test "speaker drain: keeps waiting past the minimum while the agent's tail still plays" {
+    try std.testing.expect(!session.speakerDrained(session.DRAIN_MIN_MS, true));
+    try std.testing.expect(!session.speakerDrained(session.DRAIN_MAX_MS - session.DRAIN_STEP_MS, true));
+}
+
+test "speaker drain: gives up at the cap even if the speaker never goes quiet" {
+    try std.testing.expect(session.speakerDrained(session.DRAIN_MAX_MS, true));
+}
