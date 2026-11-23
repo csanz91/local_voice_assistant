@@ -21,6 +21,7 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *cf
     assert(!strcmp(cfg->url, endpoint)); // full path AND query survive untouched
     assert(cfg->method == HTTP_METHOD_POST && cfg->timeout_ms == 5000);
     assert(cfg->crt_bundle_attach == esp_crt_bundle_attach && cfg->disable_auto_redirect);
+    assert(cfg->buffer_size_tx >= 1051);
     initialized = true; return &mock;
 }
 int esp_http_client_set_header(esp_http_client_handle_t c, const char *name, const char *value) {
@@ -90,12 +91,18 @@ int main(void) {
     reset("{\"roomName\":\"room-test\",\"serverUrl\":\"wss://host\",\"participantToken\":\"x\\u0000hidden\"}"); assert(run()==-5);
     reset(ok); response_len=10; assert(run()==-5);
     assert(!session_secret_valid("header\r\ninjection"));
-    const char *accepted="{\"version\":1,\"request_id\":\"1-2\",\"status\":\"accepted\",\"reason\":\"interrupted\"}";
+    const char *accepted="{\"version\":2,\"request_id\":\"1-2\",\"status\":\"accepted\",\"reason\":\"interrupted\"}";
     assert(sebastian_wake_result((const unsigned char *)accepted,strlen(accepted),"1-2")==1);
     assert(sebastian_wake_result((const unsigned char *)accepted,strlen(accepted),"2-2")==0);
-    const char *rejected="{\"version\":1,\"request_id\":\"1-2\",\"status\":\"rejected\",\"reason\":\"policy\"}";
+    const char *rejected="{\"version\":2,\"request_id\":\"1-2\",\"status\":\"rejected\",\"reason\":\"policy\"}";
     assert(sebastian_wake_result((const unsigned char *)rejected,strlen(rejected),"1-2")==-1);
-    const char *invalid="{\"version\":1,\"request_id\":\"1-2\",\"status\":\"accepted\",\"reason\":\"policy\"}";
+    const char *failures[] = {"invalid", "not_ready", "timeout"};
+    for (size_t i = 0; i < 3; i++) {
+        char outcome[128];
+        snprintf(outcome, sizeof(outcome), "{\"version\":2,\"request_id\":\"1-2\",\"status\":\"rejected\",\"reason\":\"%s\"}", failures[i]);
+        assert(sebastian_wake_result((const unsigned char *)outcome, strlen(outcome), "1-2") == -2);
+    }
+    const char *invalid="{\"version\":2,\"request_id\":\"1-2\",\"status\":\"accepted\",\"reason\":\"policy\"}";
     assert(sebastian_wake_result((const unsigned char *)invalid,strlen(invalid),"1-2")==0);
     assert(sebastian_wake_result((const unsigned char *)accepted,strlen(accepted)-1,"1-2")==0);
     puts("session_http: full endpoint, auth, TLS/redirect policy, dev opt-in, status, bounds and malformed/truncated response tests passed");

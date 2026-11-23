@@ -217,6 +217,7 @@ fn wwTask(_: ?*anyopaque) callconv(.c) void {
 
     var telemetry = Telemetry{};
     var fired = false;
+    var was_muted = false;
     var last_read_us: i64 = c.esp_timer_get_time();
     var bad_chunks: u32 = 0;
     var heal_threshold: u32 = 100; // ~1s; backs off after an ineffective heal
@@ -227,16 +228,27 @@ fn wwTask(_: ?*anyopaque) callconv(.c) void {
         const gap_us = t_read - last_read_us;
         last_read_us = t_read;
 
+        if (mic_src.isMuted()) {
+            if (!was_muted) {
+                // Muted audio never enters the pre-roll, and never triggers heals.
+                bad_chunks = 0;
+                pre_roll.reset();
+                resetDecimator();
+                mww_reset();
+            }
+            was_muted = true;
+            continue;
+        }
+        was_muted = false;
         const chunk = decimateChunk(got_pairs);
 
         // Channel self-heal: a bad re-latch (dead all-zero, or DC-pinned with
         // the audio crushed) never recovers alone — resync and reset the
-        // detector state until the signal looks sane. NOT while muted: a muted
-        // XVF streams all-zero I2S on purpose (749 pointless heals against the
-        // mute button taught us that). Backoff after an ineffective heal so a
-        // genuinely stuck channel logs every ~10s, not every second.
-        const muted = mic_src.isMuted();
-        if (!muted and (chunk.peak == 0 or @abs(chunk.mean) > 15000)) {
+        // detector state until the signal looks sane. Muted chunks skipped
+        // above: a muted XVF streams all-zero I2S on purpose (749 pointless
+        // heals against the mute button taught us that). Backoff after an
+        // ineffective heal so a genuinely stuck channel logs every ~10s.
+        if (chunk.peak == 0 or @abs(chunk.mean) > 15000) {
             bad_chunks += 1;
             if (bad_chunks >= heal_threshold) {
                 bad_chunks = 0;
@@ -249,7 +261,7 @@ fn wwTask(_: ?*anyopaque) callconv(.c) void {
             }
         } else {
             bad_chunks = 0;
-            if (!muted) heal_threshold = 100; // healthy again → fast reaction restored
+            heal_threshold = 100; // healthy again → fast reaction restored
         }
 
         pre_roll.feed(pcm_buf[0..chunk.samples]);

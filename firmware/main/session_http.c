@@ -22,6 +22,7 @@ int sebastian_session_create(const char *endpoint, const char *device_id, const 
         .url = endpoint,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 5000,
+        .buffer_size_tx = 1088, // 1024-byte bearer, header name, delimiters and terminator
         .crt_bundle_attach = esp_crt_bundle_attach,
         .disable_auto_redirect = true,
     };
@@ -101,13 +102,15 @@ int sebastian_wake_result(const unsigned char *bytes, size_t size, const char *r
     int result = 0;
     // Refuse duplicate keys and unexpected fields, including embedded NUL escapes.
     if (cJSON_IsObject(root) && cJSON_GetArraySize(root) == 4 && !strstr(json, "\\u0000") &&
-        cJSON_IsNumber(version) && version->valuedouble == 1 &&
+        cJSON_IsNumber(version) && version->valuedouble == 2 &&
         cJSON_IsString(id) && !strcmp(id->valuestring, request) &&
         cJSON_IsString(status) && cJSON_IsString(reason)) {
         if (!strcmp(status->valuestring, "accepted") && !strcmp(reason->valuestring, "interrupted")) result = 1;
-        if (!strcmp(status->valuestring, "rejected") &&
-            (!strcmp(reason->valuestring, "policy") || !strcmp(reason->valuestring, "not_ready") ||
-             !strcmp(reason->valuestring, "timeout") || !strcmp(reason->valuestring, "invalid"))) result = -1;
+        if (!strcmp(status->valuestring, "rejected")) {
+            if (!strcmp(reason->valuestring, "policy")) result = -1;
+            else if (!strcmp(reason->valuestring, "not_ready") || !strcmp(reason->valuestring, "timeout") ||
+                     !strcmp(reason->valuestring, "invalid")) result = -2;
+        }
     }
     cJSON_Delete(root);
     return result;

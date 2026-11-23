@@ -250,16 +250,17 @@ bool sebastian_net_connect(void) {
 }
 
 // ── Provisioning receiver ────────────────────────────────────────────────────
-static void store_cfg_bool(nvs_handle_t h, const char *key, const cJSON *item) {
-    if (cJSON_IsBool(item)) nvs_set_u8(h, key, cJSON_IsTrue(item) ? 1 : 0);
+static bool store_cfg_bool(nvs_handle_t h, const char *key, const cJSON *item) {
+    return !cJSON_IsBool(item) || nvs_set_u8(h, key, cJSON_IsTrue(item) ? 1 : 0) == ESP_OK;
 }
 
 // A string field that is present and empty ERASES the key (that is how "forget"
 // clears the endpoint and the credential); absent keeps the stored value.
-static void store_str_or_erase(nvs_handle_t h, const char *key, const cJSON *item) {
-    if (!cJSON_IsString(item)) return;
-    if (item->valuestring[0] == '\0') nvs_erase_key(h, key);
-    else nvs_set_str(h, key, item->valuestring);
+static bool store_str_or_erase(nvs_handle_t h, const char *key, const cJSON *item) {
+    if (!cJSON_IsString(item)) return true;
+    if (item->valuestring[0]) return nvs_set_str(h, key, item->valuestring) == ESP_OK;
+    esp_err_t err = nvs_erase_key(h, key);
+    return err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND;
 }
 
 // Set by the serial receiver around its own store: a USB provisioning is done
@@ -294,20 +295,19 @@ bool sebastian_provisioning_store_config(cJSON *root) {
     nvs_handle_t h;
     esp_err_t oe = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (oe != ESP_OK) { ESP_LOGE(TAG, "store: open=%s", esp_err_to_name(oe)); return false; }
-    esp_err_t se = ESP_OK;
     bool ok = store_wifi_block(h, cJSON_GetObjectItem(root, "wifi"));
     // Historical NVS key retained; its value is now the complete session URL.
     cJSON *lk = cJSON_GetObjectItem(root, "livekit");
     if (ok && lk) {
-        store_str_or_erase(h, "token_url", cJSON_GetObjectItem(lk, "tokenServerUrl"));
-        store_cfg_bool(h, "insecure_http", cJSON_GetObjectItem(lk, "allowInsecureHttp"));
+        ok = store_str_or_erase(h, "token_url", cJSON_GetObjectItem(lk, "tokenServerUrl")) &&
+             store_cfg_bool(h, "insecure_http", cJSON_GetObjectItem(lk, "allowInsecureHttp"));
     }
     cJSON *device = cJSON_GetObjectItem(root, "device");
     // Import old USB provisioning files without retaining any organization authority.
     cJSON *legacy = cJSON_GetObjectItem(root, "adoption");
     const cJSON *secret = cJSON_IsObject(device) ? cJSON_GetObjectItem(device, "secret") :
         cJSON_GetObjectItem(legacy, "deviceSecret");
-    if (ok) store_str_or_erase(h, "dev_secret", secret);
+    if (ok) ok = store_str_or_erase(h, "dev_secret", secret);
     // Session timing (session_core / session_reducer read these through config.zig).
     cJSON *sess = cJSON_GetObjectItem(root, "session");
     if (ok && cJSON_IsObject(sess)) {
@@ -353,10 +353,9 @@ bool sebastian_provisioning_store_config(cJSON *root) {
     }
     cJSON *ap = cJSON_GetObjectItem(root, "activeProfile");
     if (ok && cJSON_IsString(ap)) nvs_set_str(h, "active_prof", ap->valuestring);
-    esp_err_t ce = nvs_commit(h);
-    if (ok) ok = ce == ESP_OK;
+    if (ok) ok = nvs_commit(h) == ESP_OK;
     nvs_close(h);
-    ESP_LOGI(TAG, "store: set=%s commit=%s -> %s", esp_err_to_name(se), esp_err_to_name(ce), ok ? "ok" : "FAIL");
+    ESP_LOGI(TAG, "store: %s", ok ? "ok" : "FAIL");
     return ok;
 }
 

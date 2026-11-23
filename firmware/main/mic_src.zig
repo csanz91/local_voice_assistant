@@ -40,6 +40,7 @@ var pcm_codecs = [_]c_uint{c.ESP_CAPTURE_FMT_ID_PCM};
 // independent scalars, not a lock protecting other state.
 var mic_level = std.atomic.Value(u32).init(0);
 var gate = gate_core.Gate{};
+var hardware_muted = std.atomic.Value(bool).init(false);
 
 /// Smoothed peak of the captured voice (0..32767). Used by the LED UI to detect
 /// when someone is speaking so it can lock the beam direction per utterance.
@@ -51,10 +52,10 @@ pub fn level() u32 {
 /// audio (used by the mute button — the XVF GPIO30 mute doesn't silence our ASR
 /// beam). Can also gate the mic while the agent speaks (half-duplex), if enabled.
 pub fn setMuted(m: bool) void {
-    gate.setMuted(m);
+    hardware_muted.store(m, .release);
 }
 pub fn isMuted() bool {
-    return gate.muted;
+    return hardware_muted.load(.acquire);
 }
 
 var live_flag = std.atomic.Value(bool).init(false);
@@ -301,7 +302,7 @@ fn agentGateActive() bool {
 }
 
 fn detectBargeIn(got: usize, agent_gated: bool) void {
-    if (!wake_detector.enabled(gate.muted, agent_gated)) return;
+    if (!wake_detector.enabled(isMuted(), agent_gated)) return;
     if (got == 0) return;
 
     if (agent_gated) trackGatedPeak(got); // residual echo the AEC left, invisible in mic_level
@@ -364,7 +365,7 @@ fn readLiveSamples(frame: *c.esp_capture_stream_frame_t, total: usize) c_int {
     // continues forwarding live samples while the local wake detector listens.
     detectBargeIn(got, agent_gated);
 
-    if (gate.muted or agent_gated) {
+    if (isMuted() or agent_gated) {
         writeGatedFrame(out, total);
         return c.ESP_CAPTURE_ERR_OK;
     }
@@ -375,7 +376,6 @@ fn readLiveSamples(frame: *c.esp_capture_stream_frame_t, total: usize) c_int {
 
 fn readFrame(_: *c.esp_capture_audio_src_iface_t, frame: *c.esp_capture_stream_frame_t) callconv(.c) c_int {
     if (!instance.started) return c.ESP_CAPTURE_ERR_NOT_SUPPORTED;
-    synchronizeWakeDetector();
 
     const total = frameSampleCount(frame) orelse return c.ESP_CAPTURE_ERR_NOT_SUPPORTED;
     if (total == 0) return c.ESP_CAPTURE_ERR_OK;
@@ -401,6 +401,7 @@ fn readFrame(_: *c.esp_capture_audio_src_iface_t, frame: *c.esp_capture_stream_f
     // (full_duplex_active=false, incl. the AEC-config-failed fallback) gates the
     // mic to silence during agent speech and keeps the wake-word barge-in below.
     // The button mute (muted_flag) always applies.
+    synchronizeWakeDetector();
     const result = readLiveSamples(frame, total);
     if (result != c.ESP_CAPTURE_ERR_OK) return result;
 

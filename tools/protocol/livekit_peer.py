@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["livekit-agents==1.8.8", "livekit==1.1.20", "livekit-api==1.2.2"]
+# dependencies = ["livekit-agents==1.8.12", "livekit==1.2.1", "livekit-api==1.2.2"]
 # ///
 """Disposable native RoomIO peer using the production wake helper, without models.
 
@@ -70,18 +70,20 @@ async def run(args):
                     can_update_own_metadata=not device, can_publish_sources=["microphone"]))
                 .to_jwt())
 
-    async def tone():
-        for tick in range(int(args.tone_seconds * 100)):
-            pcm = array("h", (int(1200 * math.sin(2 * math.pi * 440 * (tick * 480 + n) / 48_000))
+    async def tone(frequency, seconds):
+        for tick in range(int(seconds * 100)):
+            pcm = array("h", (int(1200 * math.sin(2 * math.pi * frequency * (tick * 480 + n) / 48_000))
                               for n in range(480)))
             yield rtc.AudioFrame(pcm.tobytes(), 48_000, 1, 480)
 
     async def reply():
         await microphone.wait()
         await asyncio.sleep(args.reply_after)
-        speech = session.say("Disposable test tone", audio=tone(),
+        speech = session.say("Disposable test tone", audio=tone(440, args.tone_seconds),
                              allow_interruptions=True, add_to_chat_ctx=False)
         await speech
+        if speech.interrupted:
+            await session.say("Immediate follow-up", audio=tone(990, 0.8), add_to_chat_ctx=False)
 
     try:
         await room.connect(os.environ["LIVEKIT_URL"], token("protocol-peer", "agent"))

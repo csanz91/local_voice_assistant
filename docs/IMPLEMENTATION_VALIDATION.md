@@ -1,6 +1,8 @@
 # Native IoTCloud integration: implementation and validation
 
-Recorded 2026-10-20. This implements the narrow integration selected by
+Recorded 2026-10-20, with a follow-up on 2026-11-22 (below) that supersedes the
+pre-roll, wake-result and drain details in the original record. This implements
+the narrow integration selected by
 [SDK_COMPATIBILITY.md](SDK_COMPATIBILITY.md). The active wire/setup instructions
 are in [PROTOCOL.md](PROTOCOL.md); Phase 1 reports describe the earlier baseline.
 Code is ready for physical acceptance, not deployed or flashed.
@@ -13,8 +15,9 @@ Code is ready for physical acceptance, not deployed or flashed.
   match. Enlarged signaling responses are heap-owned rather than put on task
   stacks; callback data remains borrowed. The publisher-only data-channel and
   certificate trust patches remain intact.
-- Firmware exports at most 80,000 raw PCM bytes once per mic SID, after the
-  standard agent output publication. It consumes native agent state for LEDs
+- Firmware exports one wake-anchored native pre-roll stream per mic SID, after the
+  standard agent output publication. (The original 80,000-byte newest-window cap
+  was replaced on 2026-11-22; see below.) It consumes native agent state for LEDs
   and microphone policy. Both duplex modes detect local wake during replies,
   immediately block incoming output, flush, request normal interruption, and
   apply a bounded drain before reopening. Lost callback notifications cannot
@@ -30,8 +33,19 @@ Code is ready for physical acceptance, not deployed or flashed.
   The development fixtures now use native RoomIO and import the actual production
   wake handler; the obsolete custom SBPR decoder/ordered audio queue is removed.
 
-The IoTCloud delta is eight files: three existing API files, two existing agent
-entry points, one new wake helper and two focused test files. Relative to the
+The IoTCloud delta (2026-11-22, uncommitted on `feature/esp32-voice-current`)
+is 13 files:
+- API: `api/app/api/v2/voice.py`, `api/app/models/api/voice.py`,
+  `api/app/services/voice.py`, `api/tests/test_voice.py` and the new
+  `api/tests/test_device_voice.py`.
+- Voice backend: `voice/back/app/{api,models/api,services}/voice.py` and
+  `voice/back/tests/api/test_mobile_voice_api.py`, which sign the device marker.
+- Agent: the two entry points `voice/realtime_agent/app/agent.py` and
+  `agent_pipeline.py`, the new helper `app/services/session/device_wake.py` and
+  its test `tests/test_device_wake.py`.
+
+The original record said "eight files"; that count omitted the voice-backend
+marker files. Relative to the
 pre-implementation snapshot, every other existing IoTCloud file is unchanged,
 including the user's weather work. HEAD is unchanged. Firmware dependency pins
 and the local relative lock path are unchanged.
@@ -94,3 +108,65 @@ containers were not restarted.
    echo, state LEDs and recovery. No synthetic test establishes these properties.
 
 No commit, deployment, provider/home action or board flash was performed.
+
+## Follow-up 2026-11-22: audit findings 1–3
+
+This work addresses the first three findings of
+[ASTRA_INTEGRATION_AUDIT.md](ASTRA_INTEGRATION_AUDIT.md). Finding 4 (GPT-Live
+cancellation) is unchanged. The current contract is in [PROTOCOL.md](PROTOCOL.md)
+(control version 2).
+
+**Finding 1 — failed wake results.** The parser returns `1` for accepted, `-1` for
+policy and `-2` for `not_ready`/`timeout`/`invalid`. The mailbox carries
+accepted/policy/failed separately. A failure keeps incoming audio gated and
+closes the session, and only `policy` restores protected speech. There are host
+tests for each reason.
+
+**Finding 2 — first-utterance retention.** The newest-2.5-s cap is gone. The
+window is anchored to the wake mark (two-second lead through handoff, up to the
+12-second ring), and the ring stops evicting the command after a wake. The stream
+is sent in 64 KiB batches separated by credit round trips on the ordered reliable
+channel, so the 100 KiB SCTP cache bound is kept. The whole send has a 2.5 s
+deadline. The stream declares no total length, so a truncated send is still a
+valid, shorter stream. That only helps while RoomIO is still waiting: if its
+three-second wait from mic subscription expires first, the whole pre-roll is
+discarded (agent log: `timeout waiting for pre-connect audio buffer`). The live microphone starts before the send, and RoomIO
+buffers it behind the pre-roll. Not yet established: real ESP32 Wi-Fi throughput.
+A long window (up to 384,000 bytes in six batches) may exceed 2.5 s and lose its
+newest part. The send log records batches, bytes and `send_ms`, so that can be
+measured on the board.
+
+**Finding 3 — continuation.** The first follow-up attempt paused
+`session.output.audio` until a device resume. A real-`AgentSession` probe and the
+loopback simulator showed it does not hold: `AgentActivity._reconcile_playout_pause`
+calls `resume()` whenever the next reply starts forwarding. The agent now
+inserts `DeviceOutputHold` directly above the RoomIO sink, for device sessions
+only, and holds the next reply's frames independently of pause/resume. The device
+drain no longer waits for a `listening` state (that can be coalesced). It reopens
+after the 250 ms guard plus 150 ms without packets, then sends
+`iotcloud.device.wake.resume`.
+
+**Deployment order.** The agent must be deployed before version-2 firmware. The
+agent still serves version-1 firmware (no hold).
+
+### Follow-up checks
+
+| Check | Result |
+| --- | --- |
+| Agent `tests/test_device_wake.py`, real `AgentSession` | 19 passed. Includes the SDK-resume hold, interrupting a held reply without hanging playout, the unresumed-hold shutdown, and ordinary sessions keeping their output chain. Disabling the hold makes the two hold tests fail. |
+| Full realtime-agent suite (Agents 1.8.12) | 1482 passed, 5 skipped |
+| Agent ruff check/format, pyright (helper and test) | Passed, 0 errors |
+| API `test_device_voice.py` + `test_voice.py` | 52 passed |
+| Real loopback: `livekit-server --dev`, `livekit_peer.py` with the production helper, `session_fixture.py`, `simulate_device.py` | Passed twice. 4 s pre-roll in two credited batches; states `listening,speaking,listening,speaking,listening`; no fresh-reply audio before resume. `--no-preroll --no-barge` also passed. The same run with the earlier pause-based helper **failed** (4,800 fresh-reply samples before resume). |
+| Loopback packet timing (instrumented scratch copy of the simulator, polling inbound-RTP `packets_received` every 20 ms) | Idle agent track: at most one packet per ~400 ms (DTX). After the ACK: no packets for ~330 ms, until the device resume at 350 ms. Mic subscription to pre-roll stream open: 9 ms; 128 KB sent in 20 ms. |
+| `make sdk-test` (ASan/UBSan C SDK fixture), `make protocol-test` | Passed |
+| `make http-test`, `make provisioning-test` | Not run: the Docker VM had no free disk space |
+| `make fw-test fw-fmt`, ESP-IDF target build | Not run: the pinned Zig is a Linux binary used through the same Docker image. **The Zig changes in this follow-up have not been compiled.** |
+
+Known Python teardown noise is unchanged (`AUDIO_CAPTURE … server is not configured`).
+
+Board acceptance for these items:
+- the pre-roll send time and truncation rate at realistic join delays;
+- that no stale tail is heard and the next reply is not clipped, in both duplex
+  modes;
+- that a lost resume closes cleanly.

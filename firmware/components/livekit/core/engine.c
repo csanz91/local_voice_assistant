@@ -196,7 +196,9 @@ static engine_err_t subscribe_tracks(engine_t *eng, const char *participant_sid,
         if (track->type != LIVEKIT_PB_TRACK_TYPE_AUDIO) {
             continue;
         }
-        // Subscribe to the first audio track of this participant.
+        if (eng->options.audio_track_filter &&
+            !eng->options.audio_track_filter(participant_sid, track->name, eng->options.ctx)) continue;
+        // Subscribe to the first matching audio track.
         ESP_LOGI(TAG, "Subscribing to audio track: sid=%s", track->sid);
         signal_send_update_subscription(eng->signal_handle, track->sid, true);
         strlcpy(eng->session.sub_audio_track_sid, track->sid, sizeof(eng->session.sub_audio_track_sid));
@@ -788,11 +790,12 @@ static void handle_participant_update(engine_t *eng, const livekit_pb_participan
         ) == 0;
         if (is_local) {
             found_local = true;
-        } else {
-            subscribe_tracks(eng, participant->sid, participant->tracks, participant->tracks_count);
         }
         if (eng->options.on_participant_info) {
             eng->options.on_participant_info(participant, is_local, eng->options.ctx);
+        }
+        if (!is_local) {
+            subscribe_tracks(eng, participant->sid, participant->tracks, participant->tracks_count);
         }
     }
 }

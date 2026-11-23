@@ -5,7 +5,9 @@ original Phase 2 implementation approach in `REUSE_PLAN.md`.
 
 Current status: the earlier broad implementation was rolled back, the isolated
 SDK proof completed, and the narrow integration is implemented and software
-tested. Physical-board and real-provider/delegation acceptance remains open.
+tested. The 2026-11-22 follow-up fixed the audit's findings 1–3 in software
+(control version 2: pre-roll credits and a device-only next-reply hold).
+Physical-board and real-provider/delegation acceptance remains open.
 See [implementation validation](IMPLEMENTATION_VALIDATION.md) and the active
 [protocol/setup contract](PROTOCOL.md). The milestones below retain the design
 and acceptance criteria used for this work.

@@ -331,6 +331,7 @@ pub const livekit_room_options_t = extern struct {
     on_local_track_published: ?*const fn ([*:0]const u8, *const livekit_track_info_t, ?*anyopaque) callconv(.c) void = null,
     enable_preconnect_buffer: bool = false,
     audio_receive_filter: ?*const fn (?*anyopaque) callconv(.c) bool = null,
+    audio_track_filter: ?*const fn ([*:0]const u8, [*:0]const u8, ?*anyopaque) callconv(.c) bool = null,
 };
 
 pub const livekit_data_publish_options_t = extern struct {
@@ -665,6 +666,7 @@ comptime {
     std.debug.assert(@offsetOf(livekit_room_options_t, "on_local_track_published") == 68);
     std.debug.assert(@offsetOf(livekit_room_options_t, "enable_preconnect_buffer") == 72);
     std.debug.assert(@offsetOf(livekit_room_options_t, "audio_receive_filter") == 76);
+    std.debug.assert(@offsetOf(livekit_room_options_t, "audio_track_filter") == 80);
     std.debug.assert(@sizeOf(livekit_participant_info_t) == 44);
     std.debug.assert(@offsetOf(livekit_participant_info_t, "sid") == 0);
     std.debug.assert(@offsetOf(livekit_participant_info_t, "identity") == 4);
@@ -685,7 +687,7 @@ comptime {
     std.debug.assert(@offsetOf(livekit_data_received_t, "payload") == 0);
     std.debug.assert(@offsetOf(livekit_data_received_t, "topic") == 8);
     std.debug.assert(@offsetOf(livekit_data_received_t, "sender_identity") == 12);
-    std.debug.assert(@sizeOf(livekit_room_options_t) == 80);
+    std.debug.assert(@sizeOf(livekit_room_options_t) == 84);
     std.debug.assert(@offsetOf(livekit_room_options_t, "publish") == 0);
     std.debug.assert(@offsetOf(livekit_room_options_t, "subscribe") == 36);
     std.debug.assert(@offsetOf(livekit_room_options_t, "on_state_changed") == 44);

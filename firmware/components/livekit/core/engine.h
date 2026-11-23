@@ -56,6 +56,8 @@ typedef struct {
     void (*on_local_track_published)(const livekit_pb_track_published_response_t *info, void *ctx);
     bool enable_preconnect_buffer;
     bool (*audio_receive_filter)(void *ctx);
+    /// Optional selection before subscribing to a remote audio track.
+    bool (*audio_track_filter)(const char *participant_sid, const char *name, void *ctx);
     engine_media_options_t media;
 } engine_options_t;
 

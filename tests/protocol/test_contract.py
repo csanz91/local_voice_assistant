@@ -17,7 +17,7 @@ class WakeFixtureTests(unittest.TestCase):
     def test_control_request_bounds_and_room_binding(self):
         request = {"version": 1, "request_id": "wake-1", "room": "current"}
         self.assertEqual(wake_request(json.dumps(request).encode(), "current"), request)
-        for change in ({"version": True}, {"version": 2}, {"request_id": ""},
+        for change in ({"version": True}, {"version": 3}, {"request_id": ""},
                        {"request_id": "x" * 65}, {"room": "previous"}, {"authority": "owner"}):
             self.assertIsNone(wake_request(json.dumps({**request, **change}).encode(), "current"))
         for data in (b"[", b"[]", b"null", b"\xff", b" " * (MAX_WAKE_BYTES + 1)):

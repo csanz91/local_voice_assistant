@@ -253,6 +253,8 @@ typedef struct {
     /// the frame before renderer enqueue. Runs on the peer thread, with ctx.
     /// A renderer flush must be coordinated separately by the application.
     bool (*audio_receive_filter)(void *ctx);
+    /// Optional selection before subscribing to a remote audio track.
+    bool (*audio_track_filter)(const char *participant_sid, const char *name, void *ctx);
 } livekit_room_options_t;
 
 /// @defgroup System System Initialization

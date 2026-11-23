@@ -55,7 +55,8 @@ static bool send_packet(data_stream_writer_t *w, const livekit_pb_data_packet_t 
 static data_stream_writer_err_t send_header(data_stream_writer_t *w, data_stream_writer_descriptor_t *desc, const livekit_data_stream_options_t *options)
 {
     livekit_pb_data_stream_header_t pb_header = LIVEKIT_PB_DATA_STREAM_HEADER_INIT_ZERO;
-    strlcpy(pb_header.stream_id, desc->stream_id, sizeof(pb_header.stream_id));
+    _Static_assert(sizeof(pb_header.stream_id) == sizeof(desc->stream_id), "stream ID size mismatch");
+    memcpy(pb_header.stream_id, desc->stream_id, sizeof(pb_header.stream_id));
     pb_header.timestamp = get_unix_time_ms();
     pb_header.topic = (char *)options->topic;
     pb_header.has_total_length = options->has_total_length;
@@ -92,7 +93,8 @@ static data_stream_writer_err_t send_chunk(data_stream_writer_t *w, data_stream_
     memcpy(content->bytes, data, size);
 
     livekit_pb_data_stream_chunk_t pb_chunk = LIVEKIT_PB_DATA_STREAM_CHUNK_INIT_ZERO;
-    strlcpy(pb_chunk.stream_id, desc->stream_id, sizeof(pb_chunk.stream_id));
+    _Static_assert(sizeof(pb_chunk.stream_id) == sizeof(desc->stream_id), "stream ID size mismatch");
+    memcpy(pb_chunk.stream_id, desc->stream_id, sizeof(pb_chunk.stream_id));
     pb_chunk.chunk_index = desc->chunk_index;
     pb_chunk.content = content;
 
@@ -114,7 +116,8 @@ static data_stream_writer_err_t send_chunk(data_stream_writer_t *w, data_stream_
 static data_stream_writer_err_t send_trailer(data_stream_writer_t *w, data_stream_writer_descriptor_t *desc)
 {
     livekit_pb_data_stream_trailer_t pb_trailer = LIVEKIT_PB_DATA_STREAM_TRAILER_INIT_ZERO;
-    strlcpy(pb_trailer.stream_id, desc->stream_id, sizeof(pb_trailer.stream_id));
+    _Static_assert(sizeof(pb_trailer.stream_id) == sizeof(desc->stream_id), "stream ID size mismatch");
+    memcpy(pb_trailer.stream_id, desc->stream_id, sizeof(pb_trailer.stream_id));
 
     livekit_pb_data_packet_t packet = LIVEKIT_PB_DATA_PACKET_INIT_ZERO;
     packet.which_value = LIVEKIT_PB_DATA_PACKET_STREAM_TRAILER_TAG;

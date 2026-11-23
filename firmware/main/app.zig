@@ -234,7 +234,7 @@ var agent_bound = std.atomic.Value(bool).init(false);
 var local_mic_sid: [128:0]u8 = [_:0]u8{0} ** 128;
 var receive_gate = std.atomic.Value(bool).init(false);
 var received_audio = std.atomic.Value(bool).init(false);
-var agent_listening = std.atomic.Value(bool).init(false);
+
 var remote_speaking = std.atomic.Value(bool).init(false);
 var wake_pending = std.atomic.Value(bool).init(false);
 var wake_request: [65:0]u8 = [_:0]u8{0} ** 65;
@@ -260,7 +260,6 @@ fn onParticipantInfo(info: *const c.livekit_participant_info_t, ctx: ?*anyopaque
     }
     if (!agent_identity.matches(name) or !agent_sid.matches(sid)) return;
     if (info.state != c.LIVEKIT_PARTICIPANT_STATE_ACTIVE) {
-        agent_listening.store(false, .release);
         pushEvent(.{ .agent_state = .close });
         return;
     }
@@ -275,7 +274,6 @@ fn onParticipantInfo(info: *const c.livekit_participant_info_t, ctx: ?*anyopaque
             if (!std.mem.eql(u8, std.mem.span(attr.key), "lk.agent.state")) continue;
             const state = std.mem.span(attr.value);
             const listening = std.mem.eql(u8, state, "listening");
-            agent_listening.store(listening, .release);
             remote_speaking.store(std.mem.eql(u8, state, "speaking"), .release);
             // Publish detector transitions before latest UI state coalesces;
             // a short quiet->speaking transition must still re-arm capture.
@@ -295,6 +293,9 @@ fn onLocalTrackPublished(_: [*:0]const u8, track: *const c.livekit_track_info_t,
     local_mic_sid[sid.len] = 0;
     pushEvent(.{ .mic_published = true });
 }
+fn selectVoiceTrack(sid: [*:0]const u8, name: [*:0]const u8, ctx: ?*anyopaque) callconv(.c) bool {
+    return currentCallback(ctx) and agent_bound.load(.acquire) and agent_sid.matches(std.mem.span(sid)) and std.mem.eql(u8, std.mem.span(name), "roomio_audio");
+}
 fn audioReceiveFilter(ctx: ?*anyopaque) callconv(.c) bool {
     if (!currentCallback(ctx)) return false;
     received_audio.store(true, .monotonic);
@@ -312,34 +313,55 @@ fn publishBargeIn() void {
     var sequence = wake_counter.fetchAdd(1, .monotonic) +% 1;
     if (sequence == 0) sequence = wake_counter.fetchAdd(1, .monotonic) +% 1;
     const request = std.fmt.bufPrintZ(&wake_request, "{d}-{d}", .{ callback_generation, sequence }) catch return;
-    const json = std.fmt.bufPrint(&wake_payload, "{{\"version\":1,\"request_id\":\"{s}\",\"room\":\"{s}\"}}", .{ request, token.roomName() }) catch return;
+    const json = std.fmt.bufPrint(&wake_payload, "{{\"version\":2,\"request_id\":\"{s}\",\"room\":\"{s}\"}}", .{ request, token.roomName() }) catch return;
     wake_drain_started_us = c.esp_timer_get_time();
     wake_drain.start();
     wake_pending.store(true, .release);
-    var payload = c.livekit_data_payload_t{ .bytes = &wake_payload, .size = @intCast(json.len) };
+    if (!publishToAgent("iotcloud.device.wake", @constCast(json)))
+        log.warn("wake control publish failed; drain timeout will close session", .{});
+}
+
+fn publishToAgent(topic: [*:0]const u8, bytes: []u8) bool {
+    var payload = c.livekit_data_payload_t{ .bytes = bytes.ptr, .size = @intCast(bytes.len) };
     var destinations = [_][*:0]const u8{@ptrCast(&agent_identity.bytes)};
     var opts = c.livekit_data_publish_options_t{
         .payload = &payload,
-        .topic = "iotcloud.device.wake",
+        .topic = topic,
         .lossy = false,
         .destination_identities = &destinations,
         .destination_identities_count = 1,
     };
-    if (c.livekit_room_publish_data(room, &opts) != c.LIVEKIT_ERR_NONE)
-        log.warn("wake control publish failed; drain timeout will close session", .{});
+    return c.livekit_room_publish_data(room, &opts) == c.LIVEKIT_ERR_NONE;
+}
+
+var credit_ack = std.atomic.Value(u32).init(0);
+fn confirmPrerollBatch(batch: u32, deadline_us: i64) bool {
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, batch, .little);
+    if (!publishToAgent("iotcloud.device.preroll.credit", &bytes)) return false;
+    while (c.esp_timer_get_time() < deadline_us) {
+        if (credit_ack.load(.acquire) == batch) return true;
+        if (callback_mailbox.close.load(.acquire) or mic_src.isMuted()) return false;
+        c.vTaskDelay(1);
+    }
+    return false;
 }
 fn onDataReceived(data: *const c.livekit_data_received_t, ctx: ?*anyopaque) callconv(.c) void {
-    if (!currentCallback(ctx) or !agent_bound.load(.acquire) or !wake_pending.load(.acquire)) return;
+    if (!currentCallback(ctx) or !agent_bound.load(.acquire)) return;
     const sender = data.sender_identity orelse return;
     if (!agent_identity.matches(std.mem.span(sender))) return;
     const topic = data.topic orelse return;
-    if (!std.mem.eql(u8, std.mem.span(topic), "iotcloud.device.wake.result")) return;
     const bytes = data.payload.bytes orelse return;
+    if (std.mem.eql(u8, std.mem.span(topic), "iotcloud.device.preroll.credit.ack")) {
+        if (data.payload.size == 4) credit_ack.store(std.mem.readInt(u32, bytes[0..4], .little), .release);
+        return;
+    }
+    if (!wake_pending.load(.acquire) or !std.mem.eql(u8, std.mem.span(topic), "iotcloud.device.wake.result")) return;
     var expected_buf: [65]u8 = undefined;
     const sequence = wake_counter.load(.monotonic);
     const expected = std.fmt.bufPrintZ(&expected_buf, "{d}-{d}", .{ @intFromPtr(ctx), sequence }) catch return;
     const result = sebastian_wake_result(bytes, data.payload.size, expected);
-    if (result != 0) pushEvent(.{ .wake_result = .{ .sequence = sequence, .accepted = result > 0 } });
+    if (result != 0) pushEvent(.{ .wake_result = .{ .sequence = sequence, .outcome = switch (result) { 1 => .accepted, -1 => .policy, else => .failed } } });
 }
 
 fn connectNetwork() AppError!void {
@@ -362,6 +384,7 @@ fn openSession(audio: AudioPipeline, conn: token.Connection) AppError!void {
     opts.enable_preconnect_buffer = true;
     opts.on_local_track_published = onLocalTrackPublished;
     opts.audio_receive_filter = audioReceiveFilter;
+    opts.audio_track_filter = selectVoiceTrack;
     opts.on_state_changed = onStateChanged;
     opts.on_participant_info = onParticipantInfo;
     opts.on_data_received = onDataReceived;
@@ -569,7 +592,7 @@ fn nextWakeId() u32 {
 }
 
 fn openSessionForWake(audio: AudioPipeline, conn: token.Connection, wake_id: u32) bool {
-    log.info("opening session wake_id={d} pre_roll_ms={d}", .{ wake_id, pre_roll.availableMs() });
+    log.info("opening session wake_id={d}", .{wake_id});
     // Session hygiene BEFORE the room exists: drop any event raced from the end
     // of the previous session (a late "close" must not kill this one at tick 0)
     // and any speaker tail still in the render-peak accumulator.
@@ -582,11 +605,11 @@ fn openSessionForWake(audio: AudioPipeline, conn: token.Connection, wake_id: u32
     agent_sid = .{};
     local_mic_sid = [_:0]u8{0} ** 128;
     callback_mailbox = .{};
+    credit_ack.store(0, .release);
     wake_pending.store(false, .release);
     wake_drain = .{};
     receive_gate.store(false, .release);
     received_audio.store(false, .monotonic);
-    agent_listening.store(false, .release);
     remote_speaking.store(false, .release);
     active_generation.store(callback_generation, .release);
     // Budget: max session + connect/close margin. Disarmed after teardown;
@@ -630,8 +653,8 @@ fn completeWakeHandoff(st: *reducer.State, wake_id: u32) void {
     const t0 = c.esp_timer_get_time();
     wakeword.stop();
     const t_stop = c.esp_timer_get_time();
-    const sent = pre_roll.send(room, wake_id, &local_mic_sid);
-    mic_src.setLive(true);
+    mic_src.setLive(true); // RoomIO holds the live stream behind native pre-roll.
+    const sent = !mic_src.isMuted() and pre_roll.send(room, wake_id, &local_mic_sid, confirmPrerollBatch);
     const t_send = c.esp_timer_get_time();
     log.info("mic handoff wake_id={d} pre_roll_ms={d} stop_ms={d} send_ms={d}", .{
         wake_id,
@@ -725,6 +748,12 @@ fn runActiveSession(wake_id: u32) void {
             if (snapshot.state) |state| applyActions(&st, st.step(.{ .agent_state = state }), wake_id);
             if (snapshot.local_wake) applyActions(&st, st.step(.local_wake), wake_id);
             const sequence = wake_counter.load(.monotonic);
+            if (wake_pending.load(.acquire) and snapshot.failed_sequence == sequence) {
+                // not_ready/timeout/invalid: the old reply may still be live.
+                // Keep output gated and close; only "policy" may restore it.
+                log.warn("wake control failed for request {d}; closing session", .{sequence});
+                st.phase = .{ .done = .agent_close };
+            }
             if (sequence != 0 and snapshot.accepted_sequence == sequence) wake_drain.acknowledge(true) else if (sequence != 0 and snapshot.rejected_sequence == sequence) wake_drain.acknowledge(false);
         }
         const tick_due = c.esp_timer_get_time() - last_tick_us >= SESSION_TICK_MS * 1000;
@@ -735,18 +764,27 @@ fn runActiveSession(wake_id: u32) void {
             const drain_now_us = c.esp_timer_get_time();
             const drain_ms = device_voice.drainElapsedMs(last_drain_us, wake_drain_started_us, drain_now_us);
             last_drain_us = drain_now_us;
-            switch (wake_drain.advance(drain_ms, received_audio.swap(false, .monotonic), agent_listening.load(.acquire))) {
+            switch (wake_drain.advance(drain_ms, received_audio.swap(false, .monotonic))) {
                 .none => {},
                 .reopen => {
                     // Flush again before reopening: ACK is never an RTP barrier.
                     if (speaker_render != null) _ = c.av_render_flush(speaker_render);
                     wake_pending.store(false, .release);
                     receive_gate.store(false, .release);
+                    if (wake_drain.result == .accepted) {
+                        // Open the renderer before releasing the agent's held next reply.
+                        if (!publishToAgent("iotcloud.device.wake.resume", std.mem.sliceTo(&wake_request, 0))) {
+                            log.warn("wake resume publish failed; closing session", .{});
+                            receive_gate.store(true, .release);
+                            st.phase = .{ .done = .agent_close };
+                        }
+                    }
                     // A policy rejection leaves the original noninterruptible
                     // speech active; restore its real half-duplex mic gate.
                     mic_src.setAgentSpeaking(remote_speaking.load(.acquire));
                 },
                 .close => {
+                    log.warn("wake drain unresolved after {d} ms; closing session", .{device_voice.Drain.TIMEOUT_MS});
                     st.phase = .{ .done = .agent_close };
                 },
             }

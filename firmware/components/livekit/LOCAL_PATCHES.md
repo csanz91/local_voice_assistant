@@ -52,8 +52,29 @@ The component and protocol revision remain pinned; these are local changes to
   participant attribute storage must not enlarge WebSocket/engine stack frames
   or every event queue slot by several kilobytes.
 - C/Zig ILP32 ABI guards agree: participant info 44 bytes, stream options 32,
-  room options 80. Existing room-option fields keep their offsets; new fields
-  follow `ctx`. Public attribute pairs are 8 bytes and track info is 20 bytes.
+  room options 80 (84 after the 2026-11-22 track filter below). Existing
+  room-option fields keep their offsets; new fields follow `ctx`. Public attribute pairs are 8 bytes and track info is 20 bytes.
+
+## Device-control follow-up (2026-11-22)
+
+Still 0.3.10 with no protocol upgrade:
+
+- `livekit_room_options_t.audio_track_filter` (offset 80, size now 84) is an
+  optional predicate `(participant_sid, track_name, ctx)` consulted before
+  subscribing to a remote audio track. `NULL` keeps the previous behavior
+  (subscribe to the first remote audio track). Firmware accepts only the pinned
+  agent's `roomio_audio`.
+- `handle_participant_update` now invokes `on_participant_info` before
+  `subscribe_tracks` for remote participants, so an application can bind the
+  agent from the same update that first carries its track.
+- Data-stream reader/writer copy fixed-size `stream_id` arrays with `memcpy`
+  guarded by `_Static_assert` on equal sizes, instead of `strlcpy`. The host
+  fixture builds with `-D_POSIX_C_SOURCE=200809L`, where `strlcpy` is not
+  declared on every libc.
+- Pre-roll credits rely on one existing property, not a patch: stream chunks
+  and `livekit_room_publish_data(lossy=false)` both go through
+  `engine_send_data_packet(reliable=true)`, which is the publisher's single
+  ordered reliable channel.
 
 Bindings were regenerated from the existing vendored `.proto` files using
 `nanopb==0.4.9.1` and the existing `protocol/update/update.py`'s

@@ -216,6 +216,12 @@ static void on_eng_local_track_published(const livekit_pb_track_published_respon
     room->options.on_local_track_published(info->cid, &track, room->options.ctx);
 }
 
+static bool on_eng_audio_track_filter(const char *sid, const char *name, void *ctx)
+{
+    livekit_room_t *room = ctx;
+    return room->options.audio_track_filter(sid, name, room->options.ctx);
+}
+
 static bool on_eng_audio_receive_filter(void *ctx)
 {
     livekit_room_t *room = ctx;
@@ -269,6 +275,7 @@ livekit_err_t livekit_room_create(livekit_room_handle_t *handle, const livekit_r
         .on_local_track_published = on_eng_local_track_published,
         .enable_preconnect_buffer = options->enable_preconnect_buffer,
         .audio_receive_filter = on_eng_audio_receive_filter,
+        .audio_track_filter = options->audio_track_filter ? on_eng_audio_track_filter : NULL,
         .on_state_changed = on_eng_state_changed,
         .on_data_packet = on_eng_data_packet,
         .on_room_info = on_eng_room_info,

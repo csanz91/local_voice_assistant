@@ -44,17 +44,17 @@ pub const Drain = struct {
         self.quiet_ms = 0;
     }
     pub const Action = enum { none, reopen, close };
-    pub fn tick(self: *Drain, received_audio: bool, agent_listening: bool) Action {
-        return self.advance(10, received_audio, agent_listening);
+    pub fn tick(self: *Drain, received_audio: bool) Action {
+        return self.advance(10, received_audio);
     }
-    pub fn advance(self: *Drain, elapsed_ms: u32, received_audio: bool, agent_listening: bool) Action {
+    pub fn advance(self: *Drain, elapsed_ms: u32, received_audio: bool) Action {
         if (!self.pending) return .none;
         self.elapsed_ms += elapsed_ms;
         self.quiet_ms = if (received_audio) 0 else self.quiet_ms + elapsed_ms;
         if (self.elapsed_ms >= TIMEOUT_MS) return .close;
         if (self.elapsed_ms >= MIN_MS and
             (self.result == .rejected or
-                (self.result == .accepted and agent_listening and self.quiet_ms >= QUIET_MS)))
+                (self.result == .accepted and self.quiet_ms >= QUIET_MS)))
         {
             self.pending = false;
             return .reopen;
@@ -75,6 +75,7 @@ pub const Mailbox = struct {
     local_wake: std.atomic.Value(bool) = .init(false),
     close: std.atomic.Value(bool) = .init(false),
     accepted_sequence: std.atomic.Value(u32) = .init(0),
+    failed_sequence: std.atomic.Value(u32) = .init(0),
     rejected_sequence: std.atomic.Value(u32) = .init(0),
 
     pub fn publish(self: *Mailbox, event: reducer.Event) void {
@@ -88,7 +89,11 @@ pub const Mailbox = struct {
             },
             .local_wake => self.local_wake.store(true, .release),
             .wake_result => |result| {
-                if (result.accepted) self.accepted_sequence.store(result.sequence, .release) else self.rejected_sequence.store(result.sequence, .release);
+                switch (result.outcome) {
+                    .accepted => self.accepted_sequence.store(result.sequence, .release),
+                    .policy => self.rejected_sequence.store(result.sequence, .release),
+                    .failed => self.failed_sequence.store(result.sequence, .release),
+                }
             },
             else => {},
         }
@@ -101,6 +106,7 @@ pub const Mailbox = struct {
         close: bool,
         accepted_sequence: u32,
         rejected_sequence: u32,
+        failed_sequence: u32,
     };
     pub fn take(self: *Mailbox) Snapshot {
         const state = self.latest_state.swap(unset, .acq_rel);
@@ -110,8 +116,9 @@ pub const Mailbox = struct {
             .state = if (state == unset) null else @enumFromInt(state),
             .local_wake = self.local_wake.swap(false, .acq_rel),
             .close = self.close.load(.acquire),
-            .accepted_sequence = self.accepted_sequence.load(.acquire),
-            .rejected_sequence = self.rejected_sequence.load(.acquire),
+            .accepted_sequence = self.accepted_sequence.swap(0, .acq_rel),
+            .failed_sequence = self.failed_sequence.swap(0, .acq_rel),
+            .rejected_sequence = self.rejected_sequence.swap(0, .acq_rel),
         };
     }
 };

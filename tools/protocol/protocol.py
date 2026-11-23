@@ -15,7 +15,7 @@ WAKE_TOPIC = "iotcloud.device.wake"
 WAKE_RESULT_TOPIC = WAKE_TOPIC + ".result"
 DEVICE_ATTRIBUTE = "iotcloud.device.voice"
 SAMPLE_RATE = 16_000
-MAX_PCM_BYTES = 80_000
+MAX_PCM_BYTES = 12 * SAMPLE_RATE * 2
 MAX_WAKE_BYTES = 512
 
 
@@ -28,7 +28,7 @@ def wake_request(data: bytes, room_name: str) -> dict | None:
     except (ValueError, UnicodeDecodeError):
         return None
     if (not isinstance(value, dict) or set(value) != {"version", "request_id", "room"}
-            or type(value["version"]) is not int or value["version"] != 1
+            or type(value["version"]) is not int or value["version"] not in (1, 2)
             or value["room"] != room_name
             or not isinstance(value["request_id"], str)
             or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value["request_id"]) is None):

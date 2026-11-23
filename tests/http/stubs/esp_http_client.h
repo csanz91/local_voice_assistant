@@ -4,7 +4,7 @@
 #define ESP_OK 0
 #define HTTP_METHOD_POST 1
 typedef struct mock_client *esp_http_client_handle_t;
-typedef struct { const char *url; int method; int timeout_ms; int (*crt_bundle_attach)(void *); bool disable_auto_redirect; } esp_http_client_config_t;
+typedef struct { const char *url; int method; int timeout_ms; int buffer_size_tx; int (*crt_bundle_attach)(void *); bool disable_auto_redirect; } esp_http_client_config_t;
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *);
 int esp_http_client_set_header(esp_http_client_handle_t, const char *, const char *);
 int esp_http_client_open(esp_http_client_handle_t, int);

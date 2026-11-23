@@ -15,13 +15,12 @@ pub const SECONDS = core.SECONDS;
 pub const SAMPLE_CAPACITY = core.SAMPLE_CAPACITY;
 
 const TOPIC = "lk.agent.pre-connect-audio-buffer";
-const SCTP_SEND_CACHE_BYTES: u64 = 100 * 1024;
 
 var ring: ?[*]i16 = null;
 var write_idx: usize = 0;
 var filled: usize = 0;
 var total_written: u64 = 0;
-var wake_mark: u64 = 0;
+var wake_mark: ?u64 = null;
 
 /// The ring is always full (the wake task feeds it from boot), so the SEND
 /// window is anchored to the wake mark: this much audio before the wake word,
@@ -47,17 +46,18 @@ pub fn reset() void {
     write_idx = 0;
     filled = 0;
     total_written = 0;
-    wake_mark = 0;
+    wake_mark = null;
 }
 
 pub fn feed(samples: []const i16) void {
     const buf = ring orelse return;
-    for (samples) |sample| {
+    const n = core.writableSamples(wake_mark, total_written, samples.len);
+    for (samples[0..n]) |sample| {
         buf[write_idx] = sample;
         write_idx = (write_idx + 1) % SAMPLE_CAPACITY;
         if (filled < SAMPLE_CAPACITY) filled += 1;
     }
-    total_written += samples.len;
+    total_written += n;
 }
 
 /// Called by the wake task at the detection instant.
@@ -66,7 +66,7 @@ pub fn markWake() void {
 }
 
 fn windowSamples() usize {
-    return core.windowSamples(wake_mark, total_written, filled);
+    return core.windowSamples(wake_mark orelse 0, total_written, filled);
 }
 
 pub fn availableMs() u32 {
@@ -81,7 +81,7 @@ fn writeSamples(room: c.livekit_room_handle_t, stream: c.livekit_data_stream_han
     return c.livekit_room_data_stream_write(room, stream, bytes, slice.len * @sizeOf(i16)) == c.LIVEKIT_ERR_NONE;
 }
 
-pub fn send(room: c.livekit_room_handle_t, wake_id: u32, track_sid: [*:0]const u8) bool {
+pub fn send(room: c.livekit_room_handle_t, wake_id: u32, track_sid: [*:0]const u8, confirm_batch: *const fn (u32, i64) bool) bool {
     const count = windowSamples();
     if (ring == null or count == 0) {
         log.warn("no pre-roll available for wake_id={d}", .{wake_id});
@@ -90,13 +90,6 @@ pub fn send(room: c.livekit_room_handle_t, wake_id: u32, track_sid: [*:0]const u
 
     const sample_count: u32 = @intCast(count);
     const total_len: u64 = @as(u64, sample_count) * @sizeOf(i16);
-    // The publisher data channel buffers sends in a 100 KB cache (peer.c
-    // send_cache_size). A slow connect grows this window past it (140-198 KB
-    // seen in the field) — flag it so a reboot right after the handoff can be
-    // read against the size that went into the SCTP association.
-    if (total_len > SCTP_SEND_CACHE_BYTES) {
-        log.warn("pre-roll {d} bytes exceeds the SCTP send cache ({d} bytes)", .{ total_len, SCTP_SEND_CACHE_BYTES });
-    }
     const attrs = [_]c.livekit_attribute_t{
         .{ .key = "trackId", .value = track_sid },
         .{ .key = "sampleRate", .value = "16000" },
@@ -107,8 +100,10 @@ pub fn send(room: c.livekit_room_handle_t, wake_id: u32, track_sid: [*:0]const u
         .attributes_count = attrs.len,
         .topic = TOPIC,
         .is_text = false,
-        .total_length = total_len,
-        .has_total_length = true,
+        // No declared total: a deadline-truncated send still ends as a valid,
+        // shorter stream that RoomIO delivers, instead of a length mismatch.
+        .total_length = 0,
+        .has_total_length = false,
     };
     var stream: c.livekit_data_stream_handle_t = null;
     if (c.livekit_room_data_stream_open(room, &opts, &stream) != c.LIVEKIT_ERR_NONE or stream == null) {
@@ -118,23 +113,50 @@ pub fn send(room: c.livekit_room_handle_t, wake_id: u32, track_sid: [*:0]const u
 
     var ok = true;
 
-    // Newest `count` samples end at write_idx; start may wrap.
-    const start = core.startIndex(write_idx, count);
-    const first = @min(count, SAMPLE_CAPACITY - start);
-    ok = ok and writeSamples(room, stream, start, first);
-    ok = ok and writeSamples(room, stream, 0, count - first);
+    var pos = core.startIndex(write_idx, count);
+    var remaining = count;
+    var batch: u32 = 0;
+    var sent: usize = 0;
+    // Inside RoomIO's 3 s budget from stream open (pre_connect_audio_timeout).
+    const started_us = c.esp_timer_get_time();
+    const deadline = started_us + 2_500_000;
+    while (remaining > 0) {
+        const n = @min(remaining, core.BATCH_SAMPLES);
+        const first = @min(n, SAMPLE_CAPACITY - pos);
+        if (!writeSamples(room, stream, pos, first) or !writeSamples(room, stream, 0, n - first)) {
+            ok = false;
+            break;
+        }
+        remaining -= n;
+        sent += n;
+        pos = (pos + n) % SAMPLE_CAPACITY;
+        batch += 1;
+        if (remaining != 0 and !confirm_batch(batch, deadline)) {
+            ok = false;
+            break;
+        }
+    }
 
     // Close unconditionally — skipping it on a failed write leaks the handle.
     const closed = c.livekit_room_data_stream_close(room, stream) == c.LIVEKIT_ERR_NONE;
     ok = ok and closed;
     if (ok) {
-        log.info("sent pre-roll wake_id={d} duration_ms={d} bytes={d}", .{
+        log.info("sent pre-roll wake_id={d} duration_ms={d} bytes={d} batches={d} send_ms={d}", .{
             wake_id,
             availableMs(),
             total_len,
+            batch,
+            @divTrunc(c.esp_timer_get_time() - started_us, 1000),
         });
     } else {
-        log.err("send pre-roll failed wake_id={d}", .{wake_id});
+        // Truncation loses the newest window samples (nearest the live seam).
+        log.err("send pre-roll truncated wake_id={d} sent_bytes={d} of {d} batches={d} send_ms={d}", .{
+            wake_id,
+            sent * @sizeOf(i16),
+            total_len,
+            batch,
+            @divTrunc(c.esp_timer_get_time() - started_us, 1000),
+        });
     }
     return ok;
 }

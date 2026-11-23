@@ -45,10 +45,12 @@ pub const Tick = struct {
     barge_request: bool = false,
 };
 
+pub const WakeOutcome = enum { accepted, policy, failed };
+
 pub const Event = union(enum) {
     tick: Tick,
     local_wake,
-    wake_result: struct { sequence: u32, accepted: bool },
+    wake_result: struct { sequence: u32, outcome: WakeOutcome },
     agent_state: AgentState,
     /// Pinned agent published the standard roomio_audio output track.
     agent_active: bool,
@@ -106,6 +108,7 @@ pub const State = struct {
     agent_ready: bool = false,
     mic_published: bool = false,
     agent_speaking: bool = false,
+    observed_agent_state: bool = false,
     preroll: Preroll = .idle,
     // Diagnostics accumulated between AEC log windows.
     render_peak_window: u32 = 0,
@@ -141,6 +144,7 @@ pub const State = struct {
     fn stepAgentState(self: *State, s: AgentState) Actions {
         switch (s) {
             .speaking, .quiet, .thinking => {
+                self.observed_agent_state = true;
                 self.agent_speaking = (s == .speaking);
                 return .{ .mic_gate = self.agent_speaking, .ui_state = s };
             },
@@ -200,7 +204,7 @@ pub const State = struct {
         // handoff can never fire against a connection that already dropped.
         if (self.phase == .connecting and t.connection == .connected) {
             self.phase = .waiting_agent;
-            out.ui_active = true;
+            out.ui_active = !self.observed_agent_state;
         }
         if (self.phase == .waiting_agent and t.connection == .connected and self.agent_ready and self.mic_published) {
             self.phase = .live;

@@ -2,6 +2,12 @@
 
 Audit performed 2026-10-20–21. Reviewer: Astra, HIGH reasoning. This is an independent readiness assessment of the implementation described in `IMPLEMENTATION_VALIDATION.md`, not a replacement for that implementation record. Source changes were assessed against `/private/tmp/sebastian-native-integration-3xi5_255/{sebastian,iotcloud}/implementation.patch`, with surrounding firmware, native SDK, current API, agent and installed framework code inspected where the integration depends on them.
 
+> **Follow-up status (2026-11-22):** findings 1–3 have software fixes. See the
+> follow-up section of [IMPLEMENTATION_VALIDATION.md](IMPLEMENTATION_VALIDATION.md)
+> and [PROTOCOL.md](PROTOCOL.md) control version 2. Finding 4 and the board and
+> live-provider acceptance below are still open. The text below is the original
+> audit, unchanged.
+
 ## Decision
 
 **Not ready to declare the three mandatory features accepted, or to promise that the arriving board will work without further software work.** The architecture is compatible with the existing backend and ordinary native RoomIO. There is no evidence supporting a broad rewrite of the proven agent. However, one concrete failure-handling bug and two deterministic functional counterexamples remain in the firmware contract. GPT-Live interruption additionally has a provider-interface limitation that the generic speech tests do not cover.

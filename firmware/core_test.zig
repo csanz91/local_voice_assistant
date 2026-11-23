@@ -55,7 +55,7 @@ const PreRollReference = struct {
         const lead = @min(self.wake_mark, @as(u64, pre_roll.WAKE_LEAD_SAMPLES));
         const since_mark = self.total_written - self.wake_mark;
         const window: u64 = @min(@as(u64, self.filled), lead + since_mark);
-        return @intCast(@min(window, @as(u64, pre_roll.MAX_WINDOW_SAMPLES)));
+        return @intCast(@min(window, @as(u64, pre_roll.SAMPLE_CAPACITY)));
     }
 
     fn startIndex(self: PreRollReference) usize {
@@ -183,9 +183,9 @@ test "pre-roll window is anchored to wake mark" {
     try std.testing.expectEqual(sr, pre_roll.windowSamples(0, sr64, sr));
     try std.testing.expectEqual(sr, pre_roll.windowSamples(sr64 / 2, sr64, sr));
     try std.testing.expectEqual(lead + sr / 4, pre_roll.windowSamples(10 * sr64, 10 * sr64 + sr64 / 4, 11 * sr));
-    // A slow connect must never grow the send past the cap (SCTP send cache).
-    try std.testing.expectEqual(pre_roll.MAX_WINDOW_SAMPLES, pre_roll.windowSamples(10 * sr64, 11 * sr64, 11 * sr));
-    try std.testing.expectEqual(pre_roll.MAX_WINDOW_SAMPLES, pre_roll.windowSamples(10 * sr64, 30 * sr64, pre_roll.SAMPLE_CAPACITY));
+    // Network batches are independently bounded; the local ring sets the duration limit.
+    try std.testing.expectEqual(3 * sr, pre_roll.windowSamples(10 * sr64, 11 * sr64, 11 * sr));
+    try std.testing.expectEqual(pre_roll.SAMPLE_CAPACITY, pre_roll.windowSamples(10 * sr64, 30 * sr64, pre_roll.SAMPLE_CAPACITY));
 }
 
 test "pre-roll start index handles wrap and full ring" {
@@ -215,9 +215,8 @@ test "pre-roll keeps wake anchored after long connect and ring wrap" {
     state.markWake();
     noteSamples(&state, sr * 8);
 
-    // Capped: the newest 2.5 s (the command), not lead + 8 s of connect.
-    try std.testing.expectEqual(pre_roll.MAX_WINDOW_SAMPLES, state.windowSamples());
-    try std.testing.expectEqual(@as(u32, 2500), state.availableMs());
+    try std.testing.expectEqual(10 * sr, state.windowSamples());
+    try std.testing.expectEqual(@as(u32, 10_000), state.availableMs());
     try std.testing.expect(state.startIndex() < pre_roll.SAMPLE_CAPACITY);
 }
 
@@ -276,11 +275,11 @@ test "pre-roll window invariants hold across timeline matrix" {
                 const count = pre_roll.windowSamples(wake_mark, wake_mark + delta, filled);
                 const lead = @min(wake_mark, @as(u64, pre_roll.WAKE_LEAD_SAMPLES));
                 const uncapped: u64 = @min(@as(u64, filled), delta + lead);
-                const expected: usize = @intCast(@min(uncapped, @as(u64, pre_roll.MAX_WINDOW_SAMPLES)));
+                const expected: usize = @intCast(@min(uncapped, @as(u64, pre_roll.SAMPLE_CAPACITY)));
 
                 try std.testing.expectEqual(expected, count);
                 try std.testing.expect(count <= filled);
-                try std.testing.expect(count <= pre_roll.MAX_WINDOW_SAMPLES);
+                try std.testing.expect(count <= pre_roll.SAMPLE_CAPACITY);
             }
         }
     }
@@ -1320,13 +1319,13 @@ test "agent binding rejects missing, oversize and replacement identities" {
     try std.testing.expect(!id.matches("agent-2"));
 }
 
-test "wake ACK does not reopen playback through late RTP or non-listening state" {
+test "accepted drain reopens after old RTP is quiet; the agent holds the next reply until resume" {
     var d = device_voice.Drain{};
     d.start();
     d.acknowledge(true);
-    for (0..30) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(true, true));
-    for (0..20) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(false, false));
-    try std.testing.expectEqual(device_voice.Drain.Action.reopen, d.tick(false, true));
+    for (0..30) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(true));
+    for (0..14) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(false));
+    try std.testing.expectEqual(device_voice.Drain.Action.reopen, d.tick(false));
 }
 
 test "wake missing ACK or continuous stale output closes within bounded deadline" {
@@ -1334,8 +1333,8 @@ test "wake missing ACK or continuous stale output closes within bounded deadline
         var d = device_voice.Drain{};
         d.start();
         if (ack) d.acknowledge(true);
-        for (0..499) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(ack, true));
-        try std.testing.expectEqual(device_voice.Drain.Action.close, d.tick(ack, true));
+        for (0..499) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(ack));
+        try std.testing.expectEqual(device_voice.Drain.Action.close, d.tick(ack));
     }
 }
 
@@ -1343,10 +1342,10 @@ test "wake rejection resumes policy-controlled speech after conservative local h
     var d = device_voice.Drain{};
     d.start();
     d.acknowledge(false);
-    for (0..24) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(true, false));
-    try std.testing.expectEqual(device_voice.Drain.Action.reopen, d.tick(true, false));
+    for (0..24) |_| try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(true));
+    try std.testing.expectEqual(device_voice.Drain.Action.reopen, d.tick(true));
     d.acknowledge(true); // late ACK after resolved request is inert
-    try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(false, true));
+    try std.testing.expectEqual(device_voice.Drain.Action.none, d.tick(false));
 }
 
 test "callback session epochs reject teardown and previous rooms" {
@@ -1358,7 +1357,7 @@ test "callback session epochs reject teardown and previous rooms" {
 test "wake drain deadline follows elapsed time under delayed ticks" {
     var d = device_voice.Drain{};
     d.start();
-    try std.testing.expectEqual(device_voice.Drain.Action.close, d.advance(5000, false, true));
+    try std.testing.expectEqual(device_voice.Drain.Action.close, d.advance(5000, false));
 }
 
 test "local wake immediately flushes renderer and opens mic before remote ACK" {
@@ -1428,16 +1427,16 @@ test "callback mailbox latches wake once and retains matching ACK without queue 
     try std.testing.expect(!mailbox.take().local_wake); // no replay of prior wake
     var drain = device_voice.Drain{};
     drain.start();
-    mailbox.publish(.{ .wake_result = .{ .sequence = 42, .accepted = true } });
+    mailbox.publish(.{ .wake_result = .{ .sequence = 42, .outcome = .accepted } });
     for (0..1000) |_| mailbox.publish(.{ .agent_active = true });
     snapshot = mailbox.take();
     if (snapshot.accepted_sequence == 42) drain.acknowledge(true);
-    try std.testing.expectEqual(device_voice.Drain.Action.reopen, drain.advance(250, false, true));
+    try std.testing.expectEqual(device_voice.Drain.Action.reopen, drain.advance(250, false));
     // A new wake uses a fresh sequence; retained ACK42 cannot resolve request43.
     drain.start();
     snapshot = mailbox.take();
     if (snapshot.accepted_sequence == 43) drain.acknowledge(true);
-    try std.testing.expectEqual(device_voice.Drain.Action.none, drain.advance(250, false, true));
+    try std.testing.expectEqual(device_voice.Drain.Action.none, drain.advance(250, false));
     mailbox = .{}; // new room resets all latches after old callbacks stop
     snapshot = mailbox.take();
     try std.testing.expect(!snapshot.local_wake and !snapshot.agent_ready and !snapshot.mic_ready);
@@ -1488,13 +1487,41 @@ test "first drain advance excludes pre-request blocked idle and uses the actual 
     drain.acknowledge(false);
     const first_ms = device_voice.drainElapsedMs(previous_tick_us, request_started_us, request_started_us + 10_000);
     try std.testing.expectEqual(@as(u32, 10), first_ms);
-    try std.testing.expectEqual(device_voice.Drain.Action.none, drain.advance(first_ms, false, true));
+    try std.testing.expectEqual(device_voice.Drain.Action.none, drain.advance(first_ms, false));
     try std.testing.expectEqual(@as(u32, 10), drain.elapsed_ms);
     const second_ms = device_voice.drainElapsedMs(request_started_us + 10_000, request_started_us, request_started_us + 249_000);
-    try std.testing.expectEqual(device_voice.Drain.Action.none, drain.advance(second_ms, false, true));
-    try std.testing.expectEqual(device_voice.Drain.Action.reopen, drain.advance(1, false, true));
+    try std.testing.expectEqual(device_voice.Drain.Action.none, drain.advance(second_ms, false));
+    try std.testing.expectEqual(device_voice.Drain.Action.reopen, drain.advance(1, false));
     // A delay after the request starts is real elapsed time and retains timeout.
     drain.start();
     const delayed_ms = device_voice.drainElapsedMs(previous_tick_us, request_started_us, request_started_us + 5_000_000);
-    try std.testing.expectEqual(device_voice.Drain.Action.close, drain.advance(delayed_ms, false, true));
+    try std.testing.expectEqual(device_voice.Drain.Action.close, drain.advance(delayed_ms, false));
+}
+
+test "startup retains the wake command while the native stream spans multiple batches" {
+    const sr: usize = pre_roll.SAMPLE_RATE;
+    for ([_]usize{ sr / 2, 2 * sr, 4 * sr, 8 * sr, 14 * sr }) |delay| {
+        const wake: usize = 15 * sr;
+        const retained = pre_roll.writableSamples(wake, wake, delay);
+        const end = wake + retained;
+        const start = end - pre_roll.windowSamples(wake, end, pre_roll.SAMPLE_CAPACITY);
+        try std.testing.expect(start <= wake);
+        try std.testing.expect(end >= wake + @min(delay, sr * 6));
+        try std.testing.expectEqual(@min(delay, pre_roll.SAMPLE_CAPACITY), retained);
+    }
+    try std.testing.expect(pre_roll.BATCH_SAMPLES * 2 < 80_000);
+}
+
+test "initial speaking snapshot survives the connected tick" {
+    var st = reducer.State{};
+    _ = st.step(.{ .agent_state = .speaking });
+    try std.testing.expect(!st.step(.{ .tick = .{ .connection = .connected } }).ui_active);
+}
+
+test "wake transport failures remain distinct from protected speech" {
+    var mailbox = device_voice.Mailbox{};
+    mailbox.publish(.{ .wake_result = .{ .sequence = 77, .outcome = .failed } });
+    const snapshot = mailbox.take();
+    try std.testing.expectEqual(@as(u32, 77), snapshot.failed_sequence);
+    try std.testing.expectEqual(@as(u32, 0), snapshot.rejected_sequence);
 }

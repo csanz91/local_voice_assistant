@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["livekit==1.1.20"]
+# dependencies = ["livekit==1.2.1"]
 # ///
 """Disposable native client: HTTP session, pre-connect PCM, standard state, wake ACK."""
 
@@ -54,11 +54,16 @@ async def run(args):
     wake_reply = asyncio.Event()
     tasks = []
     selected = None
+    credit_ack = asyncio.Queue()
+    resumed = False
+    fresh_before_resume = 0
+    fresh_after_resume = 0
+    listening_tasks = []
     request_id = "simulated-wake-1"
     result = None
 
     async def interrupt():
-        await room.local_participant.publish_data(json.dumps({"version": 1,
+        await room.local_participant.publish_data(json.dumps({"version": 2,
             "request_id": request_id, "room": name}), topic=WAKE_TOPIC, reliable=True,
             destination_identities=[selected.identity])
 
@@ -78,14 +83,48 @@ async def run(args):
             if state == "speaking" and not args.no_barge and not tasks:
                 tasks.append(asyncio.create_task(interrupt()))
 
+    async def resume():
+        nonlocal resumed
+        await asyncio.sleep(0.35)  # leave the fast next reply queued across the guard
+        resumed = True
+        await room.local_participant.publish_data(request_id, topic=WAKE_TOPIC + ".resume",
+            reliable=True, destination_identities=[selected.identity])
+
+    async def hear(track):
+        nonlocal fresh_before_resume, fresh_after_resume
+        stream = rtc.AudioStream.from_track(track=track, sample_rate=16000, num_channels=1)
+        try:
+            async for event in stream:
+                samples = event.frame.data
+                if not samples or max(samples) < 250:
+                    continue
+                crossings = sum(a <= 0 < b for a, b in zip(samples, samples[1:]))
+                hz = crossings * 16000 / len(samples)
+                if 850 <= hz <= 1100:
+                    if resumed:
+                        fresh_after_resume += len(samples)
+                    else:
+                        fresh_before_resume += len(samples)
+        finally:
+            await stream.aclose()
+
+    def subscribed(track, pub, participant):
+        if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_AGENT and pub.name == OUTPUT_TRACK:
+            listening_tasks.append(asyncio.create_task(hear(track)))
+
     def on_data(packet):
         nonlocal result
+        if packet.participant is selected and packet.topic == "iotcloud.device.preroll.credit.ack":
+            credit_ack.put_nowait(packet.data)
+            return
         if packet.participant is not selected or packet.topic != WAKE_RESULT_TOPIC:
             return
         value = json.loads(packet.data)
-        if value.get("version") == 1 and value.get("request_id") == request_id:
+        if value.get("version") == 2 and value.get("request_id") == request_id:
             result = value
             wake_reply.set()
+            if value.get("status") == "accepted":
+                tasks.append(asyncio.create_task(resume()))
 
     room.on("participant_connected", observe)
     room.on("participant_attributes_changed", lambda _, participant: observe(participant))
@@ -93,6 +132,7 @@ async def run(args):
     room.on("participant_disconnected", lambda participant: closed.set() if participant is selected else None)
     room.on("disconnected", lambda *_: closed.set())
     room.on("data_received", on_data)
+    room.on("track_subscribed", subscribed)
 
     async def media():
         for tick in range(int(args.timeout * 50)):
@@ -112,10 +152,17 @@ async def run(args):
             rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE, preconnect_buffer=True))
         await asyncio.wait_for(ready.wait(), args.timeout)
         if not args.no_preroll:
-            pcm = array("h", (int(1500 * math.sin(2 * math.pi * 440 * n / 16_000)) for n in range(3200))).tobytes()
+            pcm = array("h", (int(1500 * math.sin(2 * math.pi * 440 * n / 16_000)) for n in range(16_000 * 4))).tobytes()
             writer = await room.local_participant.stream_bytes("wake.pcm", topic=PREROLL_TOPIC,
-                total_size=len(pcm), attributes={"trackId": pub.sid, "sampleRate": "16000", "channels": "1"})
-            await writer.write(pcm)
+                attributes={"trackId": pub.sid, "sampleRate": "16000", "channels": "1"})
+            for pos in range(0, len(pcm), 65536):
+                await writer.write(pcm[pos:pos + 65536])
+                if pos + 65536 < len(pcm):
+                    batch = (1 + pos // 65536).to_bytes(4, "little")
+                    await room.local_participant.publish_data(batch, reliable=True,
+                        topic="iotcloud.device.preroll.credit", destination_identities=[selected.identity])
+                    if await asyncio.wait_for(credit_ack.get(), 2) != batch:
+                        raise AssertionError("pre-roll batch acknowledgement mismatch")
             await writer.aclose()
         media_task = asyncio.create_task(media())
         await asyncio.wait_for(closed.wait(), args.timeout)
@@ -123,12 +170,17 @@ async def run(args):
             raise AssertionError("missing native session states")
         if not args.no_barge and (not wake_reply.is_set() or result.get("status") != "accepted"):
             raise AssertionError("production wake helper did not accept interruption")
+        if not args.no_barge and (fresh_before_resume or fresh_after_resume < 1600):
+            raise AssertionError(f"fresh reply samples before/after resume: {fresh_before_resume}/{fresh_after_resume}")
         print("Native simulated device passed; states=" + ",".join(states))
     finally:
         if media_task:
             media_task.cancel()
             await asyncio.gather(media_task, return_exceptions=True)
         await asyncio.gather(*tasks, return_exceptions=True)
+        for task in listening_tasks:
+            task.cancel()
+        await asyncio.gather(*listening_tasks, return_exceptions=True)
         await room.disconnect()
         await source.aclose()
 

@@ -172,7 +172,8 @@ data_stream_reader_err_t data_stream_reader_handle_header(data_stream_reader_han
     }
 
     slot->active = true;
-    strlcpy(slot->stream_id, header->stream_id, sizeof(slot->stream_id));
+    _Static_assert(sizeof(slot->stream_id) == sizeof(header->stream_id), "stream ID size mismatch");
+    memcpy(slot->stream_id, header->stream_id, sizeof(slot->stream_id));
     slot->next_chunk_index = 0;
     slot->bytes_processed = 0;
     slot->total_length = header->total_length;
