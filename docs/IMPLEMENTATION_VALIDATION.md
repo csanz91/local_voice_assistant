@@ -202,5 +202,12 @@ Deliberately not taken:
 | `main/app.zig` compiled for `xtensa-freestanding-none`, `esp32s3`, ReleaseSafe | Passed. Zig only: no C, no link. |
 | `make http-test`, `make provisioning-test` | Passed, on the macOS host with cJSON at ESP-IDF v5.4.4's submodule commit `c859b25` |
 | `make sdk-test`, `make protocol-test` | Passed |
-| Room callbacks on the engine task (`onStateChanged`, `onParticipantInfo`, `onDataReceived`, `onLocalTrackPublished`) | Source review of their `app.zig` call graph: no call into NVS, profile or provisioning code |
+| Room callbacks (`onStateChanged`, `onParticipantInfo`, `onDataReceived`, `onLocalTrackPublished`, `selectVoiceTrack`, `audioReceiveFilter`) | Source review of their `app.zig` call graph: no call into NVS, profile or provisioning code |
 | **ESP-IDF target build and link** | **Not run.** The `espressif/idf:v5.4.4` image did not fit on the development machine. `engine.c` and `provisioning.c` changes have not been compiled for the target, and the pinned dependency set has not been resolved. |
+
+Board acceptance added by these fixes:
+- detector frame time while the agent speaks (budget 15 ms per frame), to decide
+  the wake word task's core. `Adec` runs on core 0 above the detector; core 1 has
+  the Opus encoder and peer tasks;
+- the post-session drain, now 1.5 s to 10 s instead of a fixed 1.5 s, so the wake
+  word re-arms later after a long reply.
