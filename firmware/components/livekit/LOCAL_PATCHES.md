@@ -55,6 +55,19 @@ The component and protocol revision remain pinned; these are local changes to
   room options 80 (84 after the 2026-11-22 track filter below). Existing
   room-option fields keep their offsets; new fields follow `ctx`. Public attribute pairs are 8 bytes and track info is 20 bytes.
 
+## Upstream engine fixes (2026-11-23)
+
+Cherry-picked from `Zetesis-Labs/Sebastian`:
+
+- `5a2cdb4`: the engine task's stack and event queue live in PSRAM, which saves
+  about 14 KB of internal RAM per room. The task now suspends when it finishes and
+  `engine_destroy` deletes it. **Nothing that runs on the engine task may use the
+  flash, including NVS**: `spi_flash` asserts. Check this when adding a room
+  callback.
+- `ed0fb96` (upstream branch `fix/engine-destroy-peers`, not on its `main`):
+  `engine_destroy` stops the peers with `destroy_peer_connections`, so closing a
+  room mid-negotiation cannot leave peer tasks using freed memory.
+
 ## Device-control follow-up (2026-11-22)
 
 Still 0.3.10 with no protocol upgrade:

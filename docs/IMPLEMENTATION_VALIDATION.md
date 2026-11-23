@@ -160,8 +160,8 @@ agent still serves version-1 firmware (no hold).
 | Real loopback: `livekit-server --dev`, `livekit_peer.py` with the production helper, `session_fixture.py`, `simulate_device.py` | Passed twice. 4 s pre-roll in two credited batches; states `listening,speaking,listening,speaking,listening`; no fresh-reply audio before resume. `--no-preroll --no-barge` also passed. The same run with the earlier pause-based helper **failed** (4,800 fresh-reply samples before resume). |
 | Loopback packet timing (instrumented scratch copy of the simulator, polling inbound-RTP `packets_received` every 20 ms) | Idle agent track: at most one packet per ~400 ms (DTX). After the ACK: no packets for ~330 ms, until the device resume at 350 ms. Mic subscription to pre-roll stream open: 9 ms; 128 KB sent in 20 ms. |
 | `make sdk-test` (ASan/UBSan C SDK fixture), `make protocol-test` | Passed |
-| `make http-test`, `make provisioning-test` | Not run: the Docker VM had no free disk space |
-| `make fw-test fw-fmt`, ESP-IDF target build | Not run: the pinned Zig is a Linux binary used through the same Docker image. **The Zig changes in this follow-up have not been compiled.** |
+| `make http-test`, `make provisioning-test` | Not run on 2026-11-22 (no Docker disk space). Passed on 2026-11-23, see below. |
+| `make fw-test fw-fmt`, ESP-IDF target build | Not run on 2026-11-22. The Zig tests, formatting and an Xtensa compile passed on 2026-11-23, see below. **The ESP-IDF target build is still not run.** |
 
 Known Python teardown noise is unchanged (`AUDIO_CAPTURE … server is not configured`).
 
@@ -170,3 +170,37 @@ Board acceptance for these items:
 - that no stale tail is heard and the next reply is not clipped, in both duplex
   modes;
 - that a lost resume closes cleanly.
+
+## Follow-up 2026-11-23: upstream firmware fixes
+
+Cherry-picked from `Zetesis-Labs/Sebastian` with `-x`. Nothing here has run on a
+board, and no board is available yet.
+
+| Upstream commits | Change |
+| --- | --- |
+| `145a561`, `b262ee1`, `f9ad920` | Pin component versions. `esp-tflite-micro` 1.4.2 moved a header that the wake word component includes. |
+| `499a828` | Drain the speaker, then reset the renderer, so session audio resources do not fragment internal RAM. |
+| `5a2cdb4`, `ed0fb96` | Engine stack and queue in PSRAM; closing a room mid-negotiation stops its peers. `ed0fb96` is only on upstream's `fix/engine-destroy-peers`. |
+| `ee95a17`, `e9c7fd2`, `d6de512` | Keep retrying Wi-Fi after an outage or at boot. Only on upstream's `fix/wifi-reconexion`. |
+
+Deliberately not taken:
+- `2cb7c24` (wake word on core 1). Upstream measured it in a playback room, which
+  encodes nothing. In a conversation core 1 also runs the Opus encoder and the
+  LiveKit peer tasks, at higher priority. Measure on a board first.
+- `14fef8c`, `34cb363` (heap diagnostics). Take them when debugging on a board.
+- Playback, AirPlay, announcements, and the server, dashboard, Helm and agent
+  changes: this branch does not contain that code.
+
+`firmware/dependencies.lock` was aligned by hand for `dl_fft` 0.7.0 and
+`esp32-camera` 2.1.7. Its `manifest_hash` is stale, so the next
+`idf.py reconfigure` rewrites the lock: review that diff.
+
+| Check (2026-11-23) | Result |
+| --- | --- |
+| Zig core tests (pinned Zig 0.16.0) | 92 passed |
+| `zig fmt --check` | Passed |
+| `main/app.zig` compiled for `xtensa-freestanding-none`, `esp32s3`, ReleaseSafe | Passed. Zig only: no C, no link. |
+| `make http-test`, `make provisioning-test` | Passed, on the macOS host with cJSON at ESP-IDF v5.4.4's submodule commit `c859b25` |
+| `make sdk-test`, `make protocol-test` | Passed |
+| Room callbacks on the engine task (`onStateChanged`, `onParticipantInfo`, `onDataReceived`, `onLocalTrackPublished`) | Source review of their `app.zig` call graph: no call into NVS, profile or provisioning code |
+| **ESP-IDF target build and link** | **Not run.** The `espressif/idf:v5.4.4` image did not fit on the development machine. `engine.c` and `provisioning.c` changes have not been compiled for the target, and the pinned dependency set has not been resolved. |
