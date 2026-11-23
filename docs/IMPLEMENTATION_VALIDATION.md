@@ -161,7 +161,7 @@ agent still serves version-1 firmware (no hold).
 | Loopback packet timing (instrumented scratch copy of the simulator, polling inbound-RTP `packets_received` every 20 ms) | Idle agent track: at most one packet per ~400 ms (DTX). After the ACK: no packets for ~330 ms, until the device resume at 350 ms. Mic subscription to pre-roll stream open: 9 ms; 128 KB sent in 20 ms. |
 | `make sdk-test` (ASan/UBSan C SDK fixture), `make protocol-test` | Passed |
 | `make http-test`, `make provisioning-test` | Not run on 2026-11-22 (no Docker disk space). Passed on 2026-11-23, see below. |
-| `make fw-test fw-fmt`, ESP-IDF target build | Not run on 2026-11-22. The Zig tests, formatting and an Xtensa compile passed on 2026-11-23, see below. **The ESP-IDF target build is still not run.** |
+| `make fw-test fw-fmt`, ESP-IDF target build | Not run on 2026-11-22. All passed on 2026-11-23, see below. |
 
 Known Python teardown noise is unchanged (`AUDIO_CAPTURE … server is not configured`).
 
@@ -191,19 +191,16 @@ Deliberately not taken:
 - Playback, AirPlay, announcements, and the server, dashboard, Helm and agent
   changes: this branch does not contain that code.
 
-`firmware/dependencies.lock` was aligned by hand for `dl_fft` 0.7.0 and
-`esp32-camera` 2.1.7. Its `manifest_hash` is stale, so the next
-`idf.py reconfigure` rewrites the lock: review that diff.
+`firmware/dependencies.lock` now records `dl_fft` 0.7.0, `esp32-camera` 2.1.7 and
+the pinned direct dependencies. A build rewrites the lock's local `livekit` path
+as an absolute path and normalizes the registry URLs: do not commit those lines.
 
 | Check (2026-11-23) | Result |
 | --- | --- |
-| Zig core tests (pinned Zig 0.16.0) | 92 passed |
-| `zig fmt --check` | Passed |
-| `main/app.zig` compiled for `xtensa-freestanding-none`, `esp32s3`, ReleaseSafe | Passed. Zig only: no C, no link. |
-| `make http-test`, `make provisioning-test` | Passed, on the macOS host with cJSON at ESP-IDF v5.4.4's submodule commit `c859b25` |
-| `make sdk-test`, `make protocol-test` | Passed |
+| Clean ESP-IDF v5.4.4 target build and link, macOS arm64, with PlatformIO's `xtensa-esp-elf` esp-14.2.0_20260121 (the version ESP-IDF 5.4.4 requires) | Passed. App `0x379ce0` = 3,644,640 bytes; 13% of the factory partition free |
+| Component resolution in that clean build | Every version matches `firmware/dependencies.lock`, including the pins |
+| `make check fw-fmt` in the same clean checkout | Passed: 92 Zig tests, C SDK sanitizer fixture, protocol, HTTP and provisioning fixtures, Zig formatting |
 | Room callbacks (`onStateChanged`, `onParticipantInfo`, `onDataReceived`, `onLocalTrackPublished`, `selectVoiceTrack`, `audioReceiveFilter`) | Source review of their `app.zig` call graph: no call into NVS, profile or provisioning code |
-| **ESP-IDF target build and link** | **Not run.** The `espressif/idf:v5.4.4` image did not fit on the development machine. `engine.c` and `provisioning.c` changes have not been compiled for the target, and the pinned dependency set has not been resolved. |
 
 Board acceptance added by these fixes:
 - detector frame time while the agent speaks (budget 15 ms per frame), to decide
