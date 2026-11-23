@@ -546,10 +546,17 @@ dependencies:
       type: service
     version: 0.9.1
 direct_dependencies:
+- espressif/dl_fft
+- espressif/esp-nn
 - espressif/esp-tflite-micro
+- espressif/esp32-camera
 - espressif/esp_capture
 - espressif/esp_codec_dev
+- espressif/esp_h264
+- espressif/esp_jpeg
+- espressif/esp_muxer
 - espressif/esp_peer
+- espressif/esp_sccb_intf
 - espressif/esp_websocket_client
 - espressif/usb_device_uac
 - idf
@@ -559,6 +566,6 @@ direct_dependencies:
 - livekit/nanopb
 - tempotian/av_render
 - tempotian/media_lib_sal
-manifest_hash: d53a7db77ca7f00860ebe5cfa4e715f3a7a42a381ece4c2adbca7af585332699
+manifest_hash: df1e15c5bac3f440997008f8aafa9272713ef6d94f8946c5b47415d90375245c
 target: esp32s3
 version: 2.0.0
