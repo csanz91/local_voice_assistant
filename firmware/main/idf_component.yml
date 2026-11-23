@@ -13,7 +13,7 @@ dependencies:
   # dependencies.lock cannot hold these: the component manager discards a lock
   # whose livekit override_path is relative (it cannot evaluate it while
   # loading) and re-solves to the newest releases. Pinned to the versions in the
-  # lock, validated on hardware; CI fails if the build resolves anything else.
+  # lock, validated on hardware by upstream.
   espressif/dl_fft: "0.7.0"
   espressif/esp-nn: "1.4.1"
   espressif/esp32-camera: "2.1.7"
