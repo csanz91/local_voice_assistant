@@ -361,7 +361,11 @@ fn onDataReceived(data: *const c.livekit_data_received_t, ctx: ?*anyopaque) call
     const sequence = wake_counter.load(.monotonic);
     const expected = std.fmt.bufPrintZ(&expected_buf, "{d}-{d}", .{ @intFromPtr(ctx), sequence }) catch return;
     const result = sebastian_wake_result(bytes, data.payload.size, expected);
-    if (result != 0) pushEvent(.{ .wake_result = .{ .sequence = sequence, .outcome = switch (result) { 1 => .accepted, -1 => .policy, else => .failed } } });
+    if (result != 0) pushEvent(.{ .wake_result = .{ .sequence = sequence, .outcome = switch (result) {
+        1 => .accepted,
+        -1 => .policy,
+        else => .failed,
+    } } });
 }
 
 fn connectNetwork() AppError!void {
