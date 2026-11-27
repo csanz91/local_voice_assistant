@@ -40,7 +40,7 @@ export function validate(config: DeviceConfig): FieldIssue[] {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) { error("profiles", "Each profile must be an object."); continue; }
       if (typeof entry.name !== "string" || !entry.name || byteLength(entry.name) > 23 || /[\u0000-\u001f\u007f]/.test(entry.name) || names.has(entry.name)) error("profiles", "Profile names must be unique and contain 1–23 UTF-8 bytes without control characters.");
       names.add(entry.name);
-      if (entry.mode !== undefined && entry.mode !== "agent" && entry.mode !== "usb_mic") error("profiles", "Profile mode must be agent or usb_mic.");
+      if (entry.mode !== undefined && entry.mode !== "agent" && entry.mode !== "usb_mic" && entry.mode !== "gpt_live") error("profiles", "Profile mode must be agent, usb_mic or gpt_live.");
       for (const [key, value] of Object.entries(entry)) {
         if (["fullDuplex", "fixedBeam", "wifi", "telemetry"].includes(key)) {
           if (typeof value !== "boolean") error("profiles", `${key} must be a boolean.`);

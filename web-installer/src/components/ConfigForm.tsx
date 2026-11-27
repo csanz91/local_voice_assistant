@@ -300,9 +300,9 @@ function ProfilesEditor({ config, onChange, issues, onInvalid }: {
   const profileIssues = issues.filter((issue) => issue.path === "profiles" || issue.path === "activeProfile");
   return <fieldset className="border-t border-line pt-5">
     <legend className="mb-3 font-serif text-lg text-fg">Local profiles and USB microphone</legend>
-    <p className="mb-3 text-sm text-fg-muted">Blank keeps the profiles stored on the board. An empty array restores the built-in agente and micro-usb profiles. Profiles may override audio, WiFi and telemetry. Select the active profile by name.</p>
+    <p className="mb-3 text-sm text-fg-muted">Blank keeps the profiles stored on the board. An empty array restores the built-in agente (direct GPT-Live) and micro-usb profiles. Profiles may override audio, WiFi and telemetry. Select the active profile by name.</p>
     <label className="grid gap-2 text-sm text-fg-soft">Profiles (JSON array)
-      <textarea rows={8} value={text} placeholder={'[{"name":"agente","mode":"agent"},{"name":"micro-usb","mode":"usb_mic","fixedBeam":false}]'}
+      <textarea rows={8} value={text} placeholder={'[{"name":"agente","mode":"gpt_live"},{"name":"micro-usb","mode":"usb_mic","fixedBeam":false}]'}
         className="w-full rounded-xl border border-line bg-black/20 p-3 font-mono text-xs"
         onChange={(e) => {
           const value = e.target.value;

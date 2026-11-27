@@ -27,6 +27,7 @@
 #include "av_render.h"
 #include "av_render_types.h"
 #include "av_render_default.h"
+#include "live_peer.h"
 
 #include "livekit.h"
 #include "usb_device_uac.h"
@@ -294,6 +295,15 @@ CHECK_OFF(sebastian_profile_t, fixed_beam, 26);
 CHECK_OFF(sebastian_profile_t, beam_az, 28);
 CHECK_OFF(sebastian_profile_t, wifi, 32);
 CHECK_OFF(sebastian_profile_t, telemetry, 33);
+CHECK_VAL(SEBASTIAN_PROFILE_MODE_AGENT, 0);
+CHECK_VAL(SEBASTIAN_PROFILE_MODE_USB_MIC, 1);
+CHECK_VAL(SEBASTIAN_PROFILE_MODE_GPT_LIVE, 2); // profile.zig Mode.gpt_live
+
+// --- live_peer.c (experimental direct GPT-Live; csdk.zig mirrors these) ---
+CHECK_VAL(LIVE_PEER_STATE_IDLE, 0);
+CHECK_VAL(LIVE_PEER_STATE_CONNECTING, 1);
+CHECK_VAL(LIVE_PEER_STATE_CONNECTED, 2);
+CHECK_VAL(LIVE_PEER_STATE_ENDED, 3);
 
 // --- espressif__usb_device_uac (USB-mic mode) ---
 // Layout depends on CONFIG_USB_DEVICE_UAC_AS_PART staying off (two extra int

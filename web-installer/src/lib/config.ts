@@ -4,7 +4,8 @@ export const OPERATING_MODES: OperatingMode[] = ["full_duplex", "half_duplex"];
 
 export interface DeviceProfile {
   name: string;
-  mode?: "agent" | "usb_mic";
+  // gpt_live: direct GPT-Live WebRTC session (default); agent uses LiveKit.
+  mode?: "agent" | "usb_mic" | "gpt_live";
   fullDuplex?: boolean;
   fixedBeam?: boolean;
   beamAzimuthDeg?: number;

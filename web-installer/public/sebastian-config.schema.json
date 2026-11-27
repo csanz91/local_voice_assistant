@@ -174,7 +174,8 @@
         "mode": {
           "enum": [
             "agent",
-            "usb_mic"
+            "usb_mic",
+            "gpt_live"
           ]
         },
         "beamAzimuthDeg": {

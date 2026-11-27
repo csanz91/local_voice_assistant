@@ -17,7 +17,8 @@ const log = std.log.scoped(.profile);
 pub const NAME_MAX = 24;
 pub const MAX = 6;
 
-pub const Mode = enum(u8) { agent = 0, usb_mic = 1 };
+/// gpt_live: direct GPT-Live WebRTC session (default for voice profiles; no LiveKit room).
+pub const Mode = enum(u8) { agent = 0, usb_mic = 1, gpt_live = 2 };
 
 pub const CProfile = extern struct {
     name: [NAME_MAX]u8,
@@ -66,7 +67,7 @@ pub fn nameOf(index: usize) []const u8 {
 }
 
 pub fn activeMode() Mode {
-    if (list[active].mode > @intFromEnum(Mode.usb_mic)) return .agent;
+    if (list[active].mode > @intFromEnum(Mode.gpt_live)) return .agent;
     return @enumFromInt(list[active].mode);
 }
 
@@ -116,7 +117,7 @@ pub fn selectByIndex(index: usize) void {
 /// clears the counter and the provisioned profile returns.
 pub fn forceAgentFallback() void {
     for (0..count) |i| {
-        if (list[i].mode == @intFromEnum(Mode.agent)) {
+        if (list[i].mode == @intFromEnum(Mode.gpt_live) or list[i].mode == @intFromEnum(Mode.agent)) {
             log.err("boot-failure fallback: forcing agent profile '{s}' for this boot", .{nameOf(i)});
             active = i;
             return;

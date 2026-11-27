@@ -6,6 +6,9 @@ dependencies:
     version: "0.3.10"
     override_path: "../components/livekit"
   livekit/example_utils: "~0.2.0"
+  # Experimental direct GPT-Live (profile mode gpt_live, live_peer.c) uses
+  # esp_peer itself; same version the LiveKit component resolves.
+  espressif/esp_peer: "~1.4.2"
   espressif/esp_codec_dev: "~1.4"
   # USB-mic mode (CONFIG_SEBASTIAN_USB_MIC): TinyUSB UAC2 device — the XVF comms
   # beam exposed to the host as a plug-and-play USB microphone.

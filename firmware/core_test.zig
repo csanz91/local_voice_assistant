@@ -3,6 +3,7 @@ const std = @import("std");
 const aec = @import("main/core/aec_core.zig");
 const decimator = @import("main/core/decimator.zig");
 const gate = @import("main/core/mic_gate.zig");
+const live = @import("main/core/live_events.zig");
 const pcm = @import("main/xvf_pcm.zig");
 const pre_roll = @import("main/core/pre_roll_core.zig");
 const reducer = @import("main/core/session_reducer.zig");
@@ -1601,4 +1602,76 @@ test "wifi: attempts spent joining at boot do not count once online" {
     _ = dropFor(&st, wifi.JOIN_ATTEMPTS - 1);
     st.gotIp();
     try std.testing.expectEqualDeep(wifi.Next{ .retry_in_ms = wifi.FIRST_PAUSE_MS }, st.disconnected());
+}
+
+// ── live_events: experimental direct GPT-Live (profile mode gpt_live) ────────
+
+test "live: the envelope type wins over a nested type, whatever the key order" {
+    try std.testing.expectEqualStrings("response.event", live.eventType(
+        \\{"event":{"type":"response.output_item.done"},"type":"response.event"}
+    ).?);
+    try std.testing.expectEqualStrings("session.started", live.eventType(
+        \\ { "type" : "session.started", "session": {"id":"live_1","type":"x"} }
+    ).?);
+    try std.testing.expectEqualStrings("a\\\"b", live.eventType(
+        \\{"note":"has \"type\":\"fake\" inside","type":"a\"b"}
+    ).?);
+}
+
+test "live: malformed or untyped events are ignored, never misread" {
+    for ([_][]const u8{
+        "",                                      "not json",                        "{",         "{\"type\":5}",
+        "{\"type\":\"unterminated",              "[{\"type\":\"session.closed\"}]", "{\"a\":1}", "{\"type\"}",
+        "{\"x\":{\"type\":\"session.closed\"}}",
+    }) |json| {
+        try std.testing.expectEqual(live.Kind.ignored, live.classify(json));
+    }
+}
+
+test "live: lifecycle and activity events classify" {
+    try std.testing.expectEqual(live.Kind.started, live.classify("{\"type\":\"session.started\",\"session\":{\"id\":\"live_1\"}}"));
+    try std.testing.expectEqual(live.Kind.output_activity, live.classify("{\"type\":\"session.output_transcript.delta\",\"delta\":\"Hi\"}"));
+    try std.testing.expectEqual(live.Kind.input_activity, live.classify("{\"type\":\"session.input_transcript.delta\",\"delta\":\"turn on\"}"));
+    try std.testing.expectEqual(live.Kind.backend_activity, live.classify("{\"type\":\"session.delegation.created\"}"));
+    try std.testing.expectEqual(live.Kind.backend_activity, live.classify("{\"type\":\"response.event\",\"event\":{\"type\":\"response.created\"}}"));
+    try std.testing.expectEqual(live.Kind.closed, live.classify("{\"type\":\"session.closed\",\"usage\":{}}"));
+    try std.testing.expectEqual(live.Kind.failed, live.classify("{\"type\":\"error\",\"error\":{}}"));
+    try std.testing.expectEqual(live.Kind.ignored, live.classify("{\"type\":\"session.usage.updated\"}"));
+}
+
+test "live: speaking starts on output, survives short gaps, ends after the hangover" {
+    var t = live.Tracker{};
+    try std.testing.expectEqual(@as(?reducer.AgentState, .thinking), t.onEvent(.backend_activity, 0));
+    try std.testing.expectEqual(@as(?reducer.AgentState, null), t.onEvent(.backend_activity, 10)); // no repeat
+    try std.testing.expectEqual(@as(?reducer.AgentState, .speaking), t.onEvent(.output_activity, 100));
+    try std.testing.expectEqual(@as(?reducer.AgentState, null), t.onTick(reducer.AGENT_AUDIO_LEVEL, 400));
+    // A gap shorter than the hangover keeps speaking (and the mic gate) on.
+    try std.testing.expectEqual(@as(?reducer.AgentState, null), t.onTick(0, 400 + live.Tracker.HANGOVER_MS - 1));
+    try std.testing.expectEqual(@as(?reducer.AgentState, .quiet), t.onTick(0, 400 + live.Tracker.HANGOVER_MS));
+    try std.testing.expectEqual(@as(?reducer.AgentState, null), t.onTick(0, 5000));
+    // Backend work after a reply shows thinking again.
+    try std.testing.expectEqual(@as(?reducer.AgentState, .thinking), t.onEvent(.backend_activity, 5100));
+}
+
+test "live: speaker audio alone counts as speaking, even before any transcript" {
+    var t = live.Tracker{};
+    try std.testing.expectEqual(@as(?reducer.AgentState, null), t.onTick(reducer.AGENT_AUDIO_LEVEL - 1, 0));
+    try std.testing.expectEqual(@as(?reducer.AgentState, .speaking), t.onTick(reducer.AGENT_AUDIO_LEVEL, 10));
+    try std.testing.expectEqual(@as(?reducer.AgentState, null), t.onEvent(.backend_activity, 20)); // still speaking
+    try std.testing.expectEqual(@as(?reducer.AgentState, .close), t.onEvent(.closed, 30));
+}
+
+test "live: a direct GPT-Live session drives the unchanged reducer to a live handoff" {
+    // session.started maps to both readiness observations the reducer waits for.
+    var st = reducer.State{};
+    _ = st.step(.{ .tick = .{ .connection = .connected } });
+    _ = st.step(.{ .agent_active = true });
+    _ = st.step(.{ .mic_published = true });
+    const actions = st.step(.{ .tick = .{ .connection = .connected } });
+    try std.testing.expect(actions.handoff);
+    _ = st.step(.{ .preroll_sent = false }); // no native pre-roll on this path
+    try std.testing.expect(st.phase == .live);
+    var t = live.Tracker{};
+    const speaking = t.onEvent(.output_activity, 0).?;
+    try std.testing.expectEqual(@as(?bool, true), st.step(.{ .agent_state = speaking }).mic_gate);
 }

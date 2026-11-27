@@ -20,6 +20,8 @@
 
 #define SEBASTIAN_PROFILE_MODE_AGENT 0
 #define SEBASTIAN_PROFILE_MODE_USB_MIC 1
+// Experimental: direct GPT-Live WebRTC conversation instead of LiveKit.
+#define SEBASTIAN_PROFILE_MODE_GPT_LIVE 2
 
 typedef struct {
     char name[SEBASTIAN_PROFILE_NAME_MAX];

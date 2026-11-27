@@ -29,3 +29,15 @@ pub fn fetch() Error!Connection {
     log.info("session created for device {s}", .{std.mem.sliceTo(&id_z, 0)});
     return .{ .server_url = @ptrCast(&url_buf), .token = @ptrCast(&token_buf) };
 }
+
+/// Experimental direct GPT-Live: the same provisioned endpoint and device
+/// bearer; live_peer.c posts the SDP offer itself, so no fetch happens here.
+pub const LiveCredentials = struct { endpoint: [*:0]const u8, secret: [*:0]const u8 };
+
+pub fn liveCredentials() Error!LiveCredentials {
+    if (!c.sebastian_get_token_url(&endpoint, endpoint.len) or
+        !c.sebastian_get_device_secret(&secret_buf, secret_buf.len))
+        return error.Unprovisioned;
+    room_buf[0] = 0; // no LiveKit room on this path
+    return .{ .endpoint = @ptrCast(&endpoint), .secret = @ptrCast(&secret_buf) };
+}

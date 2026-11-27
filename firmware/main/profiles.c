@@ -42,7 +42,7 @@ static bool write_str(const char *key, const char *value) {
 
 static void profile_defaults(sebastian_profile_t *p) {
     memset(p, 0, sizeof(*p));
-    p->mode = SEBASTIAN_PROFILE_MODE_AGENT;
+    p->mode = SEBASTIAN_PROFILE_MODE_GPT_LIVE;
     p->full_duplex = -1;
     p->fixed_beam = -1;
     p->beam_az = INT32_MIN;
@@ -79,6 +79,10 @@ static bool parse_profile(const cJSON *obj, sebastian_profile_t *p) {
     const cJSON *mode = cJSON_GetObjectItem(obj, "mode");
     if (cJSON_IsString(mode) && strcmp(mode->valuestring, "usb_mic") == 0) {
         p->mode = SEBASTIAN_PROFILE_MODE_USB_MIC;
+    } else if (cJSON_IsString(mode) && strcmp(mode->valuestring, "agent") == 0) {
+        p->mode = SEBASTIAN_PROFILE_MODE_AGENT;
+    } else if (cJSON_IsString(mode) && strcmp(mode->valuestring, "gpt_live") == 0) {
+        p->mode = SEBASTIAN_PROFILE_MODE_GPT_LIVE;
     }
     parse_opt_bool(obj, "fullDuplex", &p->full_duplex);
     parse_opt_bool(obj, "fixedBeam", &p->fixed_beam);

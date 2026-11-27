@@ -566,6 +566,6 @@ direct_dependencies:
 - livekit/nanopb
 - tempotian/av_render
 - tempotian/media_lib_sal
-manifest_hash: df1e15c5bac3f440997008f8aafa9272713ef6d94f8946c5b47415d90375245c
+manifest_hash: 4ba8031a9c4b62a3513a3bac9bd91fc73aeb9dace8ea1615a8ec4e209982cd8e
 target: esp32s3
 version: 2.0.0

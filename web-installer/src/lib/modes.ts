@@ -190,7 +190,7 @@ export const SHARED: SharedGroup[] = [
       {
         path: "livekit.tokenServerUrl", label: "Full session endpoint URL", type: "url", applied: true,
         placeholder: "https://api.example.com/api/v2/device-voice-session", issuePath: "livekit.tokenServerUrl",
-        help: "Complete POST endpoint, including its path. The backend authenticates the device and creates the LiveKit room and token. The firmware does not append a path.",
+        help: "Complete POST endpoint, including its path. The backend authenticates the device and creates the session (direct GPT-Live or LiveKit). The firmware does not append a path.",
       },
       {
         path: "livekit.allowInsecureHttp", label: "Allow HTTP for local development", type: "toggle", applied: true,

@@ -35,6 +35,7 @@ const arbiter_core = @import("core/arbiter_core.zig");
 const session_core = @import("core/session_core.zig");
 const device_voice = @import("core/device_voice.zig");
 const reducer = @import("core/session_reducer.zig");
+const live = @import("core/live_events.zig");
 const token = @import("token.zig");
 const c = @import("csdk.zig");
 
@@ -52,6 +53,11 @@ const SESSION_TICK_MS: u32 = session_core.TICK_MS;
 const SESSION_MAX_TICKS: u32 = session_core.MAX_TICKS;
 
 var room: c.livekit_room_handle_t = null;
+// Conversation transport, from the active profile. .gpt_live is the
+// experimental direct GPT-Live WebRTC session (live_peer.c): no LiveKit room,
+// no native pre-roll, no wake-control protocol (GPT-Live handles barge-in).
+const Transport = enum { livekit, gpt_live };
+var transport: Transport = .livekit;
 // Peak |render sample| (>>8) since the session loop last read it. Fed by the
 // av_render reference callback (the speaker output), it is a data-channel-
 // INDEPENDENT proof that the agent is talking — the keepalive that survives a
@@ -76,6 +82,7 @@ const RenderHandle = *anyopaque;
 
 const AppError = error{
     LiveKitSystemInitFailed,
+    LiveSessionFailed,
     DecoderRegistrationFailed,
     EncoderRegistrationFailed,
     MicSourceCreateFailed,
@@ -309,7 +316,9 @@ fn onLocalWake() void {
     if (active_generation.load(.acquire) == 0) return;
     // Drop incoming audio at the transport/renderer boundary immediately. The
     // event wakes the session task to flush queued PCM and send control.
-    receive_gate.store(true, .release);
+    // GPT-Live has no wake-control protocol: it hears the user and yields on
+    // its own, so only the queued reply is flushed and the gate stays open.
+    if (transport == .livekit) receive_gate.store(true, .release);
     pushEvent(.local_wake);
 }
 fn publishBargeIn() void {
@@ -372,6 +381,69 @@ fn onDataReceived(data: *const c.livekit_data_received_t, ctx: ?*anyopaque) call
     } } });
 }
 
+// ── Direct GPT-Live (profile gpt_live) ─────────────────────────────────────────
+// Peer-thread callbacks only classify and latch; the session task owns the
+// speaking tracker (Xtensa: 32-bit atomics only, so no shared i64 timestamps).
+var live_output = std.atomic.Value(bool).init(false);
+var live_backend = std.atomic.Value(bool).init(false);
+var live_tracker = live.Tracker{};
+
+fn onLiveEvent(json: [*]const u8, len: usize, ctx: ?*anyopaque) callconv(.c) void {
+    if (!currentCallback(ctx)) return;
+    const event = json[0..len];
+    switch (live.classify(event)) {
+        .started => {
+            log.info("live session started", .{});
+            pushEvent(.{ .agent_active = true });
+            pushEvent(.{ .mic_published = true });
+        },
+        .output_activity => live_output.store(true, .release),
+        .backend_activity => live_backend.store(true, .release),
+        .closed => {
+            log.info("live session closed by the server", .{});
+            pushEvent(.{ .agent_state = .close });
+        },
+        .failed => log.warn("live session error: {s}", .{event[0..@min(event.len, 240)]}),
+        .input_activity, .ignored => {},
+    }
+}
+
+fn liveAudioFilter(ctx: ?*anyopaque) callconv(.c) bool {
+    if (!currentCallback(ctx)) return false;
+    received_audio.store(true, .monotonic);
+    return !receive_gate.load(.acquire);
+}
+
+fn openLiveSession(audio: AudioPipeline) AppError!void {
+    const creds = token.liveCredentials() catch {
+        log.err("live session: endpoint or device secret not provisioned", .{});
+        return error.LiveSessionFailed;
+    };
+    logHeap("pre-live-connect");
+    const rc = c.live_peer_open(audio.mic, audio.speaker, creds.endpoint, creds.secret, onLiveEvent, liveAudioFilter, @ptrFromInt(callback_generation));
+    logHeap("post-live-connect");
+    if (rc != 0) {
+        log.err("live session open failed (rc={d})", .{rc});
+        return error.LiveSessionFailed;
+    }
+    log.info("live session open", .{});
+}
+
+/// Speaking/thinking/quiet for this tick from the latched events and the
+/// speaker peak; the LiveKit path gets the same states from lk.agent.state.
+fn liveAgentState(render_peak_now: u32) ?reducer.AgentState {
+    const now_ms: i64 = @divTrunc(c.esp_timer_get_time(), 1000);
+    var state: ?reducer.AgentState = null;
+    if (live_backend.swap(false, .acq_rel)) state = live_tracker.onEvent(.backend_activity, now_ms) orelse state;
+    if (live_output.swap(false, .acq_rel)) state = live_tracker.onEvent(.output_activity, now_ms) orelse state;
+    state = live_tracker.onTick(render_peak_now, now_ms) orelse state;
+    if (state) |s| {
+        remote_speaking.store(s == .speaking, .release);
+        mic_src.noteAgentState(s == .speaking);
+    }
+    return state;
+}
+
 fn connectNetwork() AppError!void {
     // NVS-provisioned WiFi; factory images contain no credentials.
     if (!c.sebastian_net_connect()) return error.NetworkConnectFailed;
@@ -414,6 +486,14 @@ fn openSession(audio: AudioPipeline, conn: token.Connection) AppError!void {
 }
 
 fn closeSession() void {
+    if (transport == .gpt_live) {
+        // Graceful: session.close, bounded wait for session.closed, teardown.
+        // Callbacks stay live until then so the final event is still seen.
+        c.live_peer_close();
+        active_generation.store(0, .release);
+        log.info("session closed", .{});
+        return;
+    }
     active_generation.store(0, .release);
     wake_pending.store(false, .release);
     if (room == null) return;
@@ -599,7 +679,7 @@ fn nextWakeId() u32 {
     return wake_seq;
 }
 
-fn openSessionForWake(audio: AudioPipeline, conn: token.Connection, wake_id: u32) bool {
+fn openSessionForWake(audio: AudioPipeline, conn: ?token.Connection, wake_id: u32) bool {
     log.info("opening session wake_id={d}", .{wake_id});
     // Session hygiene BEFORE the room exists: drop any event raced from the end
     // of the previous session (a late "close" must not kill this one at tick 0)
@@ -619,11 +699,14 @@ fn openSessionForWake(audio: AudioPipeline, conn: token.Connection, wake_id: u32
     receive_gate.store(false, .release);
     received_audio.store(false, .monotonic);
     remote_speaking.store(false, .release);
+    live_output.store(false, .release);
+    live_backend.store(false, .release);
+    live_tracker = .{};
     active_generation.store(callback_generation, .release);
     // Budget: max session + connect/close margin. Disarmed after teardown;
     // if anything below wedges, the watchdog reboots us back to listening.
     wdgArm(@as(i32, SESSION_MAX_TICKS * SESSION_TICK_MS / 1000) + 45);
-    openSession(audio, conn) catch |err| {
+    (if (conn) |connection| openSession(audio, connection) else openLiveSession(audio)) catch |err| {
         active_generation.store(0, .release);
         logStageError("session open", err);
         wakeword.stop();
@@ -641,11 +724,17 @@ fn classifyConnection(state: c_int) reducer.Connection {
     return .connecting;
 }
 
+fn classifyLiveConnection(state: c_int) reducer.Connection {
+    if (state == c.LIVE_PEER_STATE_CONNECTED) return .connected;
+    if (state == c.LIVE_PEER_STATE_ENDED or state == c.LIVE_PEER_STATE_IDLE) return .ended;
+    return .connecting;
+}
+
 fn sampleTick(raw_state: *c_int) reducer.Event {
-    raw_state.* = c.livekit_room_get_state(room);
+    raw_state.* = if (transport == .gpt_live) c.live_peer_state() else c.livekit_room_get_state(room);
     return .{
         .tick = .{
-            .connection = classifyConnection(raw_state.*),
+            .connection = if (transport == .gpt_live) classifyLiveConnection(raw_state.*) else classifyConnection(raw_state.*),
             .mic_level = mic_src.level(),
             .render_peak = render_peak.swap(0, .monotonic),
             .barge_request = false, // local wake is latched in callback_mailbox
@@ -662,7 +751,8 @@ fn completeWakeHandoff(st: *reducer.State, wake_id: u32) void {
     wakeword.stop();
     const t_stop = c.esp_timer_get_time();
     mic_src.setLive(true); // RoomIO holds the live stream behind native pre-roll.
-    const sent = !mic_src.isMuted() and pre_roll.send(room, wake_id, &local_mic_sid, confirmPrerollBatch);
+    // GPT-Live over WebRTC cannot take injected audio: the mic just goes live.
+    const sent = transport == .livekit and !mic_src.isMuted() and pre_roll.send(room, wake_id, &local_mic_sid, confirmPrerollBatch);
     const t_send = c.esp_timer_get_time();
     log.info("mic handoff wake_id={d} pre_roll_ms={d} stop_ms={d} send_ms={d}", .{
         wake_id,
@@ -707,7 +797,7 @@ fn applyActions(st: *reducer.State, actions: reducer.Actions, wake_id: u32) void
     }
     if (actions.publish_barge) {
         _ = mic_src.takeBargeRequest();
-        publishBargeIn();
+        if (transport == .livekit) publishBargeIn();
     }
     if (actions.ui_active) xvf_ui.setState(.active); // ring: DoA beam — I'm listening
     if (actions.handoff) completeWakeHandoff(st, wake_id);
@@ -767,7 +857,11 @@ fn runActiveSession(wake_id: u32) void {
         const tick_due = c.esp_timer_get_time() - last_tick_us >= SESSION_TICK_MS * 1000;
         if (tick_due) {
             last_tick_us = c.esp_timer_get_time();
-            applyActions(&st, st.step(sampleTick(&raw_state)), wake_id);
+            const tick = sampleTick(&raw_state);
+            if (transport == .gpt_live) {
+                if (liveAgentState(tick.tick.render_peak)) |state| applyActions(&st, st.step(.{ .agent_state = state }), wake_id);
+            }
+            applyActions(&st, st.step(tick), wake_id);
 
             const drain_now_us = c.esp_timer_get_time();
             const drain_ms = device_voice.drainElapsedMs(last_drain_us, wake_drain_started_us, drain_now_us);
@@ -866,7 +960,8 @@ fn runWakeCycle(audio: AudioPipeline) void {
 
     // The wake task keeps draining I2S into the pre-roll ring through token fetch
     // and connect; LiveKit remains disconnected here, so IDLE costs zero minutes.
-    const conn = fetchConnectionAfterWake() orelse return;
+    // gpt_live: live_peer.c posts its own SDP offer, so there is no token fetch.
+    const conn: ?token.Connection = if (transport == .gpt_live) null else fetchConnectionAfterWake() orelse return;
     const wake_id = nextWakeId();
     if (!openSessionForWake(audio, conn, wake_id)) return;
 
@@ -951,7 +1046,9 @@ export fn app_main() callconv(.c) void {
 
     switch (profile.activeMode()) {
         .usb_mic => usb_mic.run(xvf_ok),
-        .agent => {
+        .agent, .gpt_live => |mode| {
+            transport = if (mode == .gpt_live) .gpt_live else .livekit;
+            log.info("conversation transport: {s}", .{@tagName(transport)});
             runAgent(xvf_ok, aec_configured);
             // runAgent only returns when a boot stage failed. A degraded
             // agent is still a microphone: the USB host keeps the mic.
@@ -1002,6 +1099,8 @@ fn runAgent(xvf_ok: bool, aec_configured: bool) void {
     // prod (power + WiFi only). No-op if syslog_ip is unprovisioned.
     c.sebastian_syslog_start();
     logResetReason();
+    // Generate the DTLS certificate once, off the wake-to-answer path.
+    if (transport == .gpt_live) c.live_peer_prepare();
     c.sebastian_coredump_report();
 
     if (wakeword.init()) {

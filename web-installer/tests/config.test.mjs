@@ -67,3 +67,10 @@ test("owner issued device JWT accepts its 1024 byte boundary", () => {
   const cfg = valid(); cfg.device = { secret: "a".repeat(1024) };
   assert.equal(hasBlockingErrors(validate(cfg)), false);
 });
+
+test("the gpt_live profile mode validates; unknown modes still fail", () => {
+  const ok = { ...valid(), profiles: [{ name: "agente", mode: "agent" }, { name: "gpt-live", mode: "gpt_live" }] };
+  assert.equal(hasBlockingErrors(validate(ok)), false);
+  const bad = { ...valid(), profiles: [{ name: "x", mode: "gpt-live" }] };
+  assert.equal(hasBlockingErrors(validate(bad)), true);
+});

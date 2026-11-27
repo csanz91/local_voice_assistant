@@ -391,6 +391,19 @@ pub extern fn sebastian_session_create(endpoint: [*:0]const u8, device_id: [*:0]
 // network is up; no-op if syslog_ip is unprovisioned. See syslog_sink.c.
 pub extern fn sebastian_syslog_start() void;
 pub extern fn sebastian_get_token_url(out: [*]u8, out_size: usize) bool;
+
+// Experimental direct GPT-Live WebRTC session (live_peer.c, profile gpt_live).
+pub const LIVE_PEER_STATE_IDLE: c_int = 0;
+pub const LIVE_PEER_STATE_CONNECTING: c_int = 1;
+pub const LIVE_PEER_STATE_CONNECTED: c_int = 2;
+pub const LIVE_PEER_STATE_ENDED: c_int = 3;
+pub const LivePeerEventCb = *const fn (json: [*]const u8, len: usize, ctx: ?*anyopaque) callconv(.c) void;
+pub const LivePeerAudioFilter = *const fn (ctx: ?*anyopaque) callconv(.c) bool;
+pub extern fn live_peer_open(capturer: ?*anyopaque, renderer: ?*anyopaque, endpoint: [*:0]const u8, secret: [*:0]const u8, on_event: LivePeerEventCb, audio_filter: LivePeerAudioFilter, ctx: ?*anyopaque) c_int;
+pub extern fn live_peer_state() c_int;
+pub extern fn live_peer_send_json(json: [*:0]const u8) bool;
+pub extern fn live_peer_close() void;
+pub extern fn live_peer_prepare() void;
 pub extern fn esp_sntp_setoperatingmode(mode: u8) void;
 pub extern fn esp_sntp_setservername(idx: u8, server: [*:0]const u8) void;
 pub extern fn esp_sntp_init() void;

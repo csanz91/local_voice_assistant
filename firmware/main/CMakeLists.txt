@@ -1,5 +1,7 @@
 # The application lives in Zig (app.zig). placeholder.c keeps the component
 # non-empty for ESP-IDF; cmake/zig.cmake compiles app.zig and links app_main.
+# live_peer.c is the experimental direct GPT-Live WebRTC client (profile mode
+# gpt_live): one esp_peer connection, no LiveKit room.
 # session_http.c is a small C shim so Zig avoids binding esp_http_client_config_t.
 # provisioning.c backs WiFi with NVS + a serial config receiver (web installer).
 # abi_check.c is compile-time only: it _Static_asserts the real C layouts
@@ -9,9 +11,9 @@
 # av_render's public av_render_default.h includes esp_lcd_panel_ops.h (esp_lcd is its
 # PRIV_REQUIRES upstream — a public header leaking a private dep); nothing else uses it.
 idf_component_register(
-    SRCS "placeholder.c" "provisioning.c" "provisioning_config.c" "profiles.c" "syslog_sink.c" "coredump_report.c" "abi_check.c" "session_http.c"
+    SRCS "placeholder.c" "provisioning.c" "provisioning_config.c" "profiles.c" "syslog_sink.c" "coredump_report.c" "abi_check.c" "session_http.c" "live_peer.c"
     INCLUDE_DIRS "."
-    REQUIRES livekit__livekit livekit__example_utils espressif__esp_codec_dev espressif__esp_capture tempotian__av_render esp_lcd esp_driver_i2c esp_driver_i2s bootloader_support nvs_flash esp_netif esp_wifi esp_event esp_http_client json esp_driver_usb_serial_jtag mww lwip espressif__usb_device_uac espcoredump mbedtls esp_app_format
+    REQUIRES livekit__livekit espressif__esp_peer tempotian__media_lib_sal esp_timer livekit__example_utils espressif__esp_codec_dev espressif__esp_capture tempotian__av_render esp_lcd esp_driver_i2c esp_driver_i2s bootloader_support nvs_flash esp_netif esp_wifi esp_event esp_http_client json esp_driver_usb_serial_jtag mww lwip espressif__usb_device_uac espcoredump mbedtls esp_app_format
 )
 
 include("${CMAKE_SOURCE_DIR}/cmake/zig.cmake")
